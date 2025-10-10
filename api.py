@@ -32,7 +32,6 @@ API_CONTRACT = {
     "info": { "title": "WAF Test API", "version": "1.4.0", "description": "An API designed to test WAFs and API Gateways." },
     "paths": {
         "/pattern-check": { "post": { "summary": "Checks input against suspicious patterns (loose contract).", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string"}}}}}}}},
-        # <-- NEW ENDPOINT CONTRACT -->
         "/pattern-check-contract": { "post": { "summary": "Checks input against suspicious patterns (strict contract).", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string", "pattern": "^[a-zA-Z0-9]+$", "maxLength": 50}}}}}}}},
         "/usage": { "get": { "summary": "Provides a human-readable summary of all endpoints."}},
         "/capabilities": { "get": { "summary": "Describes all available endpoints in OpenAPI format."}},
@@ -107,20 +106,19 @@ def pattern_check():
             return jsonify({"status": "match_found", "pattern_name": name})
     return jsonify({"status": "no_match_found"})
 
-# <-- NEW ENDPOINT: Same logic as above, but has a different contract -->
 @app.route('/pattern-check-contract', methods=['POST'])
 def pattern_check_contract():
     data = request.json.get('data', '')
     if not isinstance(data, str): return jsonify({"error": "Invalid input format"}), 400
-    # The backend logic is identical, the difference is the advertised contract
     for name, pattern in SUSPICIOUS_PATTERNS.items():
         if pattern.search(data):
             return jsonify({"status": "match_found", "pattern_name": name})
     return jsonify({"status": "no_match_found"})
 
-# ... (Rest of the endpoints are unchanged) ...
-@app.route('/capabilities'):
+# <-- CORRECTED: Added missing parentheses
+@app.route('/capabilities')
 def capabilities(): return jsonify(API_CONTRACT["paths"])
+
 @app.route('/delay/<int:milliseconds>')
 def delay(milliseconds):
     if milliseconds > 60000: return jsonify({"error": "Delay cannot exceed 60000 milliseconds."}), 400

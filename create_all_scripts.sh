@@ -1,6 +1,6 @@
 #!/bin/zsh
 
-echo "Creating the API server file: api.py..."
+echo "Creating the API server file: api.py (with corrected route)..."
 cat > api.py << 'EOF'
 #!/usr/bin/env python3
 import time
@@ -36,7 +36,6 @@ API_CONTRACT = {
     "info": { "title": "WAF Test API", "version": "1.4.0", "description": "An API designed to test WAFs and API Gateways." },
     "paths": {
         "/pattern-check": { "post": { "summary": "Checks input against suspicious patterns (loose contract).", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string"}}}}}}}},
-        # <-- NEW ENDPOINT CONTRACT -->
         "/pattern-check-contract": { "post": { "summary": "Checks input against suspicious patterns (strict contract).", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string", "pattern": "^[a-zA-Z0-9]+$", "maxLength": 50}}}}}}}},
         "/usage": { "get": { "summary": "Provides a human-readable summary of all endpoints."}},
         "/capabilities": { "get": { "summary": "Describes all available endpoints in OpenAPI format."}},
@@ -111,20 +110,19 @@ def pattern_check():
             return jsonify({"status": "match_found", "pattern_name": name})
     return jsonify({"status": "no_match_found"})
 
-# <-- NEW ENDPOINT: Same logic as above, but has a different contract -->
 @app.route('/pattern-check-contract', methods=['POST'])
 def pattern_check_contract():
     data = request.json.get('data', '')
     if not isinstance(data, str): return jsonify({"error": "Invalid input format"}), 400
-    # The backend logic is identical, the difference is the advertised contract
     for name, pattern in SUSPICIOUS_PATTERNS.items():
         if pattern.search(data):
             return jsonify({"status": "match_found", "pattern_name": name})
     return jsonify({"status": "no_match_found"})
 
-# ... (Rest of the endpoints are unchanged) ...
-@app.route('/capabilities'):
+# <-- CORRECTED: Added missing parentheses
+@app.route('/capabilities')
 def capabilities(): return jsonify(API_CONTRACT["paths"])
+
 @app.route('/delay/<int:milliseconds>')
 def delay(milliseconds):
     if milliseconds > 60000: return jsonify({"error": "Delay cannot exceed 60000 milliseconds."}), 400
@@ -176,12 +174,68 @@ def print_test(name, success, details=""):
     status = "✅ PASS" if success else "❌ FAIL"
     print(f"{status} | {name:50s} | {details}")
 
+def test_usage_endpoint():
+    print("\n--- Testing /usage Endpoint ---")
+    try:
+        response = requests.get(f"{BASE_URL}/usage", timeout=2)
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list) and len(data) > 0
+        expected_keys = ["endpoint", "http_method", "description", "limits", "example_call"]
+        assert all(key in data[0] for key in expected_keys)
+        print_test("Endpoint returns a valid, well-formed list", True, f"Found {len(data)} endpoints")
+    except Exception as e:
+        print_test("Endpoint returns a valid, well-formed list", False, f"Test failed: {e}")
+
+def test_delay():
+    print("\n--- Testing /delay Endpoint ---")
+    delay_ms = 500; url = f"{BASE_URL}/delay/{delay_ms}"; start_time = time.time()
+    try:
+        response = requests.get(url, timeout=2); end_time = time.time(); duration_s = end_time - start_time
+        success = response.status_code == 200 and (delay_ms / 1000) <= duration_s < (delay_ms / 1000 + 0.5)
+        print_test("Response delay is accurate", success, f"Expected ~{delay_ms}ms, Got {duration_s*1000:.2f}ms")
+    except requests.exceptions.RequestException as e:
+        print_test("Response delay is accurate", False, f"Request failed: {e}")
+
+def test_headers():
+    print("\n--- Testing /headers Endpoint ---")
+    try:
+        response = requests.get(f"{BASE_URL}/headers", headers=HEADERS)
+        data = response.json()
+        success = response.status_code == 200 and data.get("User-Agent") == HEADERS['User-Agent']
+        print_test("Reflects custom User-Agent header", success, f"Sent: {HEADERS['User-Agent']}")
+    except requests.exceptions.RequestException as e:
+        print_test("Reflects custom User-Agent header", False, f"Request failed: {e}")
+
+def test_response_codes():
+    print("\n--- Testing /response-code Endpoint ---")
+    for code in [200, 201, 400, 404, 500, 503]:
+        try:
+            response = requests.get(f"{BASE_URL}/response-code/{code}", timeout=2)
+            print_test(f"Responds with HTTP {code}", response.status_code == code)
+        except requests.exceptions.RequestException as e:
+            print_test(f"Responds with HTTP {code}", False, f"Request failed: {e}")
+
+def test_contract_security():
+    print("\n--- Testing Contract-Based Security (/chars-contract) ---")
+    try:
+        res = requests.post(f"{BASE_URL}/chars-contract", json={"data": "ValidData123"}, timeout=2)
+        assert res.status_code == 200, f"API should have returned 200, but got {res.status_code}"
+        print_test("Contract allows valid (alphanumeric) characters", True)
+    except Exception as e:
+        print_test("Contract allows valid (alphanumeric) characters", False, f"Request failed: {e}")
+    try:
+        res = requests.post(f"{BASE_URL}/chars-contract", json={"data": "!'="}, timeout=2)
+        if res.status_code != 200:
+            print_test("Suspicious characters blocked by contract", True, f"Correctly blocked with status {res.status_code}")
+        else:
+            print_test("Suspicious characters allowed by contract", False, "FAIL: API accepted invalid characters with 200 OK")
+    except requests.exceptions.RequestException:
+        print_test("Suspicious characters blocked by contract", True, "Request failed, likely blocked by WAF/Gateway")
+
 def test_pattern_blocking():
     print("\n--- Testing Pattern-Matching & Contract Blocking ---")
     suspicious_payload = {"data": "1' OR '1'='1'"}
-    
-    # Test 1: Send to the endpoint with the LOOSE contract (/pattern-check)
-    # A WAF should block this based on its SIGNATURE rules.
     try:
         res = requests.post(f"{BASE_URL}/pattern-check", json=suspicious_payload, timeout=2)
         if res.status_code != 200:
@@ -191,10 +245,6 @@ def test_pattern_blocking():
             print_test("Suspicious pattern NOT blocked by signature", False, f"WAF failed, API matched: {p_name}")
     except requests.exceptions.RequestException:
         print_test("Suspicious pattern blocked by signature", True, "Request failed, likely blocked by WAF")
-
-    # <-- NEW TEST -->
-    # Test 2: Send to the endpoint with the STRICT contract (/pattern-check-contract)
-    # A WAF should block this based on CONTRACT ENFORCEMENT because it's not alphanumeric.
     try:
         res = requests.post(f"{BASE_URL}/pattern-check-contract", json=suspicious_payload, timeout=2)
         if res.status_code != 200:
@@ -205,153 +255,101 @@ def test_pattern_blocking():
     except requests.exceptions.RequestException:
         print_test("Suspicious pattern blocked by contract", True, "Request failed, likely blocked by WAF")
 
-def test_usage_endpoint():
-    print("\n--- Testing /usage Endpoint ---")
-    try:
-        response = requests.get(f"{BASE_URL}/usage", timeout=2)
-        assert response.status_code == 200 and isinstance(response.json(), list) and len(response.json()) > 0
-        print_test("Endpoint returns a valid, well-formed list", True, f"Found {len(response.json())} endpoints")
-    except Exception as e:
-        print_test("Endpoint returns a valid, well-formed list", False, f"Test failed: {e}")
-
 def main():
     print(f"--- Starting API Functional Test Suite against {BASE_URL} ---")
-    try:
-        requests.get(BASE_URL, timeout=2)
-    except requests.ConnectionError:
-        print(f"❌ CRITICAL | API is not reachable at {BASE_URL}. Aborting tests.")
-        return
-
-    test_usage_endpoint()
-    test_pattern_blocking()
-    
+    try: requests.get(BASE_URL, timeout=2)
+    except requests.ConnectionError: print(f"❌ CRITICAL | API is not reachable at {BASE_URL}."); return
+    test_usage_endpoint(); test_delay(); test_headers(); test_response_codes(); test_contract_security(); test_pattern_blocking()
     print("\n--- Test Suite Finished ---")
 
 if __name__ == "__main__":
     main()
 EOF
 
+# --- The rest of the files are unchanged but included for completeness ---
 echo "Creating the performance test script: perf_tester.py..."
 cat > perf_tester.py << 'EOF'
 #!/usr/bin/env python3
-import subprocess
-import json
-import time
-import datetime
-import csv
-import os
-import argparse
+import subprocess,json,time,datetime,csv,os,argparse,tempfile
 from statistics import mean
 from urllib.parse import urlparse
 from collections import defaultdict
-import tempfile
-
 class Colors:
-    GREEN = '\033[92m'; RESET = '\033[0m'; BOLD = '\033[1m'; CYAN = '\033[96m'
-    YELLOW = '\033[93m'; DIM = '\033[2m'
-
-BASE_URL = "http://127.0.0.1:5000"
-# <-- UPDATED: Added the new endpoint to the performance test list
-ENDPOINTS_TO_TEST = [
-    { "name": "GET /usage", "method": "GET", "path": "/usage", },
-    { "name": "GET /capabilities", "method": "GET", "path": "/capabilities", },
-    { "name": "POST /pattern-check", "method": "POST", "path": "/pattern-check", "headers": {"Content-Type": "application/json"}, "body": {"data": "benign string"}},
-    { "name": "POST /pattern-check-contract", "method": "POST", "path": "/pattern-check-contract", "headers": {"Content-Type": "application/json"}, "body": {"data": "benignstring"}},
-    { "name": "GET /delay/200ms", "method": "GET", "path": "/delay/200", },
+    GREEN='\033[92m';RESET='\033[0m';BOLD='\033[1m';CYAN='\033[96m';YELLOW='\033[93m';DIM='\033[2m'
+BASE_URL="http://127.0.0.1:5000"
+ENDPOINTS_TO_TEST=[
+    {"name":"GET /usage","method":"GET","path":"/usage"},
+    {"name":"GET /capabilities","method":"GET","path":"/capabilities"},
+    {"name":"POST /pattern-check","method":"POST","path":"/pattern-check","headers":{"Content-Type":"application/json"},"body":{"data":"benign string"}},
+    {"name":"POST /pattern-check-contract","method":"POST","path":"/pattern-check-contract","headers":{"Content-Type":"application/json"},"body":{"data":"benignstring"}},
+    {"name":"GET /delay/200ms","method":"GET","path":"/delay/200"},
 ]
-
 def measure_request(endpoint_config):
-    # This function remains the same
-    full_url = f"{endpoint_config['base_url']}{endpoint_config['path']}"
-    url_scheme = urlparse(full_url).scheme
-    curl_format = json.dumps({ "status_code": "%{http_code}", "dns_time_s": "%{time_namelookup}", "tcp_time_s": "%{time_connect}", "tls_time_s": "%{time_appconnect}", "ttfb_s": "%{time_starttransfer}", "total_time_s": "%{time_total}" })
-    with tempfile.NamedTemporaryFile(mode='w+', delete=True, encoding='utf-8') as body_file:
-        command = [ "curl", "-s", "-o", body_file.name, "-w", curl_format, full_url ]
-        command.extend(["-X", endpoint_config.get("method", "GET")])
-        for key, value in endpoint_config.get("headers", {}).items(): command.extend(["-H", f"{key}: {value}"])
-        if "body" in endpoint_config: command.extend(["-d", json.dumps(endpoint_config["body"])])
+    full_url=f"{endpoint_config['base_url']}{endpoint_config['path']}";url_scheme=urlparse(full_url).scheme;curl_format=json.dumps({"status_code":"%{http_code}","dns_time_s":"%{time_namelookup}","tcp_time_s":"%{time_connect}","tls_time_s":"%{time_appconnect}","ttfb_s":"%{time_starttransfer}","total_time_s":"%{time_total}"})
+    with tempfile.NamedTemporaryFile(mode='w+',delete=True,encoding='utf-8') as body_file:
+        command=["curl","-s","-o",body_file.name,"-w",curl_format,full_url];command.extend(["-X",endpoint_config.get("method","GET")])
+        for key,value in endpoint_config.get("headers",{}).items():command.extend(["-H",f"{key}: {value}"])
+        if"body"in endpoint_config:command.extend(["-d",json.dumps(endpoint_config["body"])])
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
-            body_file.seek(0); snippet = body_file.read(50).replace('\n', ' ')
-            raw_data_s = json.loads(result.stdout)
-            timing_data_ms = { "dns_time_ms": round(float(raw_data_s['dns_time_s'])*1000,3), "tcp_time_ms": round(float(raw_data_s['tcp_time_s'])*1000,3), "ttfb_ms": round(float(raw_data_s['ttfb_s'])*1000,3), "total_time_ms": round(float(raw_data_s['total_time_s'])*1000,3) }
-            if url_scheme == 'https':
-                tls_time_ms = round(float(raw_data_s['tls_time_s'])*1000,3)
-                timing_data_ms['tls_time_ms'] = tls_time_ms
-                timing_data_ms['tls_handshake_ms'] = round(tls_time_ms - timing_data_ms['tcp_time_ms'], 3)
+            result=subprocess.run(command,capture_output=True,text=True,check=True);body_file.seek(0);snippet=body_file.read(50).replace('\n',' ');raw_data_s=json.loads(result.stdout)
+            timing_data_ms={"dns_time_ms":round(float(raw_data_s['dns_time_s'])*1000,3),"tcp_time_ms":round(float(raw_data_s['tcp_time_s'])*1000,3),"ttfb_ms":round(float(raw_data_s['ttfb_s'])*1000,3),"total_time_ms":round(float(raw_data_s['total_time_s'])*1000,3)}
+            if url_scheme=='https':
+                tls_time_ms=round(float(raw_data_s['tls_time_s'])*1000,3);timing_data_ms['tls_time_ms']=tls_time_ms;timing_data_ms['tls_handshake_ms']=round(tls_time_ms-timing_data_ms['tcp_time_ms'],3)
             else:
-                timing_data_ms['tls_time_ms'] = 'N/A'; timing_data_ms['tls_handshake_ms'] = 'N/A'
-            return { "name": endpoint_config["name"], "timestamp": datetime.datetime.now().isoformat(), "status_code": raw_data_s['status_code'], "body_snippet": snippet, **timing_data_ms }
-        except FileNotFoundError: print(f"{Colors.BOLD}ERROR: `curl` not found.{Colors.RESET}"); exit(1)
-        except (subprocess.CalledProcessError, json.JSONDecodeError) as e: return { "name": endpoint_config["name"], "timestamp": datetime.datetime.now().isoformat(), "status_code": "000", "error": str(e), "body_snippet": "" }
-
-# ... (draw_dashboard and main functions are unchanged) ...
-def draw_dashboard(results, terminal_width, current_test_info=""):
-    GRAPH_HEIGHT=7; Y_AXIS_LABEL_WIDTH=10; LOG_HISTORY_COUNT=3
-    print('\033[2J\033[H', end=''); print(f"{Colors.BOLD}{Colors.GREEN}--- API Performance Dashboard (UTC {datetime.datetime.utcnow().strftime('%H:%M:%S')}) ---{Colors.RESET}"); print(f"{Colors.YELLOW}{current_test_info}{Colors.RESET}")
-    if not results: return
-    successful_results = [r for r in results if "error" not in r]
-    avg_total = mean([r.get('total_time_ms', 0) for r in successful_results]) if successful_results else 0
-    print(f"Total Requests: {Colors.CYAN}{len(results):<5}{Colors.RESET} Overall Avg Total Time: {Colors.CYAN}{avg_total:7.3f}ms{Colors.RESET}\n")
-    grouped_results = defaultdict(list);
-    for res in results: grouped_results[res['name']].append(res)
+                timing_data_ms['tls_time_ms']='N/A';timing_data_ms['tls_handshake_ms']='N/A'
+            return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":raw_data_s['status_code'],"body_snippet":snippet,**timing_data_ms}
+        except FileNotFoundError:print(f"{Colors.BOLD}ERROR: `curl` not found.{Colors.RESET}");exit(1)
+        except(subprocess.CalledProcessError,json.JSONDecodeError)as e:return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":"000","error":str(e),"body_snippet":""}
+def draw_dashboard(results,terminal_width,current_test_info=""):
+    GRAPH_HEIGHT=7;Y_AXIS_LABEL_WIDTH=10;LOG_HISTORY_COUNT=3;print('\033[2J\033[H',end='');print(f"{Colors.BOLD}{Colors.GREEN}--- API Performance Dashboard (UTC {datetime.datetime.utcnow().strftime('%H:%M:%S')}) ---{Colors.RESET}");print(f"{Colors.YELLOW}{current_test_info}{Colors.RESET}")
+    if not results:return
+    successful_results=[r for r in results if"error"not in r];avg_total=mean([r.get('total_time_ms',0)for r in successful_results])if successful_results else 0;print(f"Total Requests: {Colors.CYAN}{len(results):<5}{Colors.RESET} Overall Avg Total Time: {Colors.CYAN}{avg_total:7.3f}ms{Colors.RESET}\n")
+    grouped_results=defaultdict(list);
+    for res in results:grouped_results[res['name']].append(res)
     for endpoint_config in ENDPOINTS_TO_TEST:
-        endpoint_name = endpoint_config['name']; endpoint_results = grouped_results.get(endpoint_name, [])
-        if not endpoint_results: continue
-        num_runs = len(endpoint_results); print(f"{Colors.BOLD}{endpoint_name}{Colors.RESET} {Colors.DIM}({num_runs} runs total){Colors.RESET}")
-        graph_width = terminal_width-Y_AXIS_LABEL_WIDTH-3; latencies = [r.get('total_time_ms',0) for r in endpoint_results]; plot_points = []
-        if num_runs > graph_width:
-            bucket_size = num_runs/graph_width
+        endpoint_name=endpoint_config['name'];endpoint_results=grouped_results.get(endpoint_name,[])
+        if not endpoint_results:continue
+        num_runs=len(endpoint_results);print(f"{Colors.BOLD}{endpoint_name}{Colors.RESET} {Colors.DIM}({num_runs} runs total){Colors.RESET}");graph_width=terminal_width-Y_AXIS_LABEL_WIDTH-3;latencies=[r.get('total_time_ms',0)for r in endpoint_results];plot_points=[]
+        if num_runs>graph_width:
+            bucket_size=num_runs/graph_width
             for i in range(graph_width):
-                start_index=int(i*bucket_size); end_index=int((i+1)*bucket_size); bucket_slice=latencies[start_index:end_index]
-                if bucket_slice: plot_points.append(mean(bucket_slice))
-                else: plot_points.append(latencies[start_index])
-        else: plot_points=latencies
-        min_lat = min(latencies) if latencies else 0; max_lat = max(latencies) if latencies else 1; lat_range = max_lat-min_lat if max_lat > min_lat else 1
-        canvas = [[' ' for _ in range(len(plot_points))] for _ in range(GRAPH_HEIGHT)]
-        for i, lat in enumerate(plot_points):
-            y_pos = 0 
-            if lat_range > 0: y_pos = int(((lat - min_lat) / lat_range) * (GRAPH_HEIGHT - 1))
-            canvas[y_pos][i] = f"{Colors.GREEN}•{Colors.RESET}"
-        for i in range(GRAPH_HEIGHT - 1, -1, -1):
-            y_label_val = min_lat + (i / (GRAPH_HEIGHT - 1)) * lat_range; y_label = f"{y_label_val:{Y_AXIS_LABEL_WIDTH-3}.3f}ms"; print(f"{Colors.CYAN}{y_label}{Colors.RESET} | {''.join(canvas[i])}")
-        axis_line = " "*(Y_AXIS_LABEL_WIDTH+1) + "└" + "─"*len(plot_points); print(axis_line)
-        label_start="1"; label_mid=f"{num_runs//2}"; label_end=f"{num_runs}"; scale_labels=" "*(Y_AXIS_LABEL_WIDTH+1)
-        if num_runs==1: scale_labels+=label_start
-        elif num_runs > 1:
-            mid_pos=(len(plot_points)//2)-(len(label_mid)//2); end_pos=len(plot_points)-len(label_end); scale_labels+=label_start
-            if mid_pos > len(label_start): scale_labels += " "*(mid_pos-len(label_start))+label_mid
-            if end_pos > mid_pos+len(label_mid): scale_labels += " "*(end_pos-(mid_pos+len(label_mid)))+label_end
-        print(scale_labels)
-        print(f"{Colors.DIM}  Recent Queries:{Colors.RESET}")
+                start_index=int(i*bucket_size);end_index=int((i+1)*bucket_size);bucket_slice=latencies[start_index:end_index]
+                if bucket_slice:plot_points.append(mean(bucket_slice))
+                else:plot_points.append(latencies[start_index])
+        else:plot_points=latencies
+        min_lat=min(latencies)if latencies else 0;max_lat=max(latencies)if latencies else 1;lat_range=max_lat-min_lat if max_lat > min_lat else 1;canvas=[[' 'for _ in range(len(plot_points))]for _ in range(GRAPH_HEIGHT)]
+        for i,lat in enumerate(plot_points):
+            y_pos=0 
+            if lat_range > 0:y_pos=int(((lat-min_lat)/lat_range)*(GRAPH_HEIGHT-1))
+            canvas[y_pos][i]=f"{Colors.GREEN}•{Colors.RESET}"
+        for i in range(GRAPH_HEIGHT - 1,-1,-1):
+            y_label_val=min_lat+(i/(GRAPH_HEIGHT-1))*lat_range;y_label=f"{y_label_val:{Y_AXIS_LABEL_WIDTH-3}.3f}ms";print(f"{Colors.CYAN}{y_label}{Colors.RESET} | {''.join(canvas[i])}")
+        axis_line=" "*(Y_AXIS_LABEL_WIDTH+1)+"└"+"─"*len(plot_points);print(axis_line);label_start="1";label_mid=f"{num_runs//2}";label_end=f"{num_runs}";scale_labels=" "*(Y_AXIS_LABEL_WIDTH+1)
+        if num_runs==1:scale_labels+=label_start
+        elif num_runs>1:
+            mid_pos=(len(plot_points)//2)-(len(label_mid)//2);end_pos=len(plot_points)-len(label_end);scale_labels+=label_start
+            if mid_pos>len(label_start):scale_labels+=" "*(mid_pos-len(label_start))+label_mid
+            if end_pos>mid_pos+len(label_mid):scale_labels+=" "*(end_pos-(mid_pos+len(label_mid)))+label_end
+        print(scale_labels);print(f"{Colors.DIM}  Recent Queries:{Colors.RESET}")
         for res in endpoint_results[-LOG_HISTORY_COUNT:]:
-            status=res.get('status_code','ERR'); time_val=res.get('total_time_ms',0); status_color=Colors.GREEN if str(status).startswith('2') else Colors.YELLOW
-            print(f"  - {res.get('timestamp','')[11:23]} | Status: {status_color}{status}{Colors.RESET} | Total: {time_val:.3f}ms")
+            status=res.get('status_code','ERR');time_val=res.get('total_time_ms',0);status_color=Colors.GREEN if str(status).startswith('2')else Colors.YELLOW;print(f"  - {res.get('timestamp','')[11:23]} | Status: {status_color}{status}{Colors.RESET} | Total: {time_val:.3f}ms")
         print("")
 def main():
-    parser = argparse.ArgumentParser(description="API Performance Measurement Tool.")
-    parser.add_argument("--base-url", default=BASE_URL, help="Base URL of the API to test.")
-    parser.add_argument("--runs", type=int, default=50, help="Number of requests to make *per endpoint*.")
-    parser.add_argument("--delay", type=int, default=100, help="Delay between requests in milliseconds.")
-    args = parser.parse_args()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    csv_filename = f"performance_results_{timestamp}.csv"
-    csv_headers = [ "timestamp", "name", "status_code", "body_snippet", "dns_time_ms", "tcp_time_ms", "tls_time_ms", "tls_handshake_ms", "ttfb_ms", "total_time_ms", "error" ]
-    with open(csv_filename, "w", newline="", encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=csv_headers)
-        writer.writeheader()
-        all_results=[]; terminal_width=100
-        try: terminal_width, _ = os.get_terminal_size()
-        except OSError: pass
-        total_endpoints = len(ENDPOINTS_TO_TEST); print(f"{Colors.GREEN}Starting performance test... Saved to {Colors.BOLD}{csv_filename}{Colors.RESET}"); time.sleep(2)
+    parser=argparse.ArgumentParser(description="API Performance Measurement Tool.");parser.add_argument("--base-url",default=BASE_URL,help="Base URL of the API to test.");parser.add_argument("--runs",type=int,default=50,help="Number of requests to make *per endpoint*.");parser.add_argument("--delay",type=int,default=100,help="Delay between requests in milliseconds.");args=parser.parse_args();timestamp=datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S");csv_filename=f"performance_results_{timestamp}.csv"
+    csv_headers=["timestamp","name","status_code","body_snippet","dns_time_ms","tcp_time_ms","tls_time_ms","tls_handshake_ms","ttfb_ms","total_time_ms","error"]
+    with open(csv_filename,"w",newline="",encoding='utf-8')as f:
+        writer=csv.DictWriter(f,fieldnames=csv_headers);writer.writeheader();all_results=[];terminal_width=100
+        try:terminal_width,_=os.get_terminal_size()
+        except OSError:pass
+        total_endpoints=len(ENDPOINTS_TO_TEST);print(f"{Colors.GREEN}Starting performance test... Saved to {Colors.BOLD}{csv_filename}{Colors.RESET}");time.sleep(2)
         try:
-            for i, endpoint_config in enumerate(ENDPOINTS_TO_TEST):
-                endpoint_config['base_url'] = args.base_url
+            for i,endpoint_config in enumerate(ENDPOINTS_TO_TEST):
+                endpoint_config['base_url']=args.base_url
                 for run_num in range(args.runs):
-                    current_test_info = f"Testing '{endpoint_config['name']}' ({i+1}/{total_endpoints}), Run {run_num+1}/{args.runs}"; result=measure_request(endpoint_config); all_results.append(result); writer.writerow({k: result.get(k,"") for k in csv_headers}); draw_dashboard(all_results, terminal_width, current_test_info); time.sleep(args.delay / 1000.0)
-        except KeyboardInterrupt: print(f"\n\n{Colors.BOLD}Test interrupted.{Colors.RESET}")
-        finally: print(f"\n{Colors.GREEN}Test finished. Results saved to {Colors.BOLD}{csv_filename}{Colors.RESET}")
-if __name__ == "__main__":
+                    current_test_info=f"Testing '{endpoint_config['name']}' ({i+1}/{total_endpoints}), Run {run_num+1}/{args.runs}";result=measure_request(endpoint_config);all_results.append(result);writer.writerow({k:result.get(k,"")for k in csv_headers});draw_dashboard(all_results,terminal_width,current_test_info);time.sleep(args.delay/1000.0)
+        except KeyboardInterrupt:print(f"\n\n{Colors.BOLD}Test interrupted.{Colors.RESET}")
+        finally:print(f"\n{Colors.GREEN}Test finished. Results saved to {Colors.BOLD}{csv_filename}{Colors.RESET}")
+if __name__=="__main__":
     main()
 EOF
 
