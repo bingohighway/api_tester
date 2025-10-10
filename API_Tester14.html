@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Performance Tester</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .chart-container {
+            position: relative;
+            height: 40vh;
+            width: 100%;
+        }
+        /* Simple style for active tab */
+        .tab-active {
+            border-color: #4f46e5;
+            color: #4f46e5;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div class="container mx-auto p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-900">API Performance Tester</h1>
+            <p class="text-lg text-gray-600 mt-2">Measure and analyze API response times.</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Configuration Panel -->
+            <div class="lg:col-span-1 bg-white p-6 rounded-lg shadow-lg self-start">
+                <div class="flex border-b mb-6">
+                    <button id="perf-mode-tab" class="py-2 px-4 font-semibold border-b-2 tab-active">Performance Test</button>
+                    <button id="single-mode-tab" class="py-2 px-4 text-gray-500 font-semibold border-b-2 border-transparent hover:text-indigo-600">Single Request</button>
+                </div>
+
+                <form id="api-form">
+                    <div class="mb-4">
+                        <label for="url" class="block text-sm font-medium text-gray-700 mb-1">API URL</label>
+                        <input type="url" id="url" name="url" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" placeholder="http://api.example.com/data" value="http://httpbin.org/get" required>
+                    </div>
+                    <div class="mb-4">
+                        <label for="method" class="block text-sm font-medium text-gray-700 mb-1">Method</label>
+                        <select id="method" name="method" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                            <option>GET</option>
+                            <option>POST</option>
+                            <option>PUT</option>
+                            <option>DELETE</option>
+                            <option>PATCH</option>
+                            <option>HEAD</option>
+                            <option>OPTIONS</option>
+                        </select>
+                    </div>
+                     <div class="mb-4">
+                        <label for="headers" class="block text-sm font-medium text-gray-700 mb-1">Headers (JSON)</label>
+                        <textarea id="headers" name="headers" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" placeholder='{ "Authorization": "Bearer YOUR_TOKEN" }'></textarea>
+                    </div>
+                    <div class="mb-4">
+                        <label for="body" class="block text-sm font-medium text-gray-700 mb-1">Request Body (JSON)</label>
+                        <textarea id="body" name="body" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" placeholder='{ "key": "value" }'></textarea>
+                    </div>
+                    <div id="requests-container" class="mb-4">
+                        <label for="requests" class="block text-sm font-medium text-gray-700 mb-1">Number of Requests</label>
+                        <input type="number" id="requests" name="requests" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" value="20" min="1" max="1000">
+                    </div>
+                    <div id="delay-container" class="mb-6">
+                        <label for="delay" class="block text-sm font-medium text-gray-700 mb-1">Delay between requests (ms)</label>
+                        <input type="number" id="delay" name="delay" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" value="50" min="0" max="10000">
+                    </div>
+                    <div id="perf-buttons" class="flex items-center space-x-4">
+                        <button type="button" id="start-btn" class="w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 ease-in-out">Start Test</button>
+                        <button type="button" id="stop-btn" class="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition duration-150 ease-in-out" disabled>Stop Test</button>
+                    </div>
+                    <div id="single-button-container" class="hidden">
+                        <button type="button" id="send-single-btn" class="w-full bg-sky-600 text-white font-bold py-2 px-4 rounded-md hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 transition duration-150 ease-in-out">Send Request</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Results and Visualization -->
+            <div class="lg:col-span-2 bg-white p-6 rounded-lg shadow-lg">
+                <!-- Tabs for Results and Help -->
+                <div class="flex border-b">
+                    <button id="results-tab" class="py-2 px-4 font-semibold border-b-2 tab-active">Results</button>
+                    <button id="help-local-api-tab" class="py-2 px-4 text-gray-500 font-semibold border-b-2 border-transparent hover:text-indigo-600">Help: Local API / CORS Errors</button>
+                </div>
+
+                <!-- Performance Test Results Content -->
+                <div id="results-content">
+                    <div class="flex justify-between items-center my-4">
+                        <h2 class="text-2xl font-semibold">Test Results</h2>
+                        <button id="download-csv" class="bg-green-600 text-white font-bold py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition duration-150 ease-in-out" disabled>Download CSV</button>
+                    </div>
+
+                    <div class="mb-4">
+                        <div id="progress-container" class="w-full bg-gray-200 rounded-full h-2.5 hidden">
+                          <div id="progress-bar" class="bg-indigo-600 h-2.5 rounded-full" style="width: 0%"></div>
+                        </div>
+                        <p id="progress-text" class="text-center text-sm text-gray-600 mt-1"></p>
+                    </div>
+
+                    <div id="summary" class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6 text-center">
+                        <div class="bg-gray-50 p-4 rounded-lg"><h4 class="text-sm font-medium text-gray-500">Avg Latency</h4><p id="avg-latency" class="text-2xl font-bold">- ms</p></div>
+                        <div class="bg-gray-50 p-4 rounded-lg"><h4 class="text-sm font-medium text-gray-500">Min Latency</h4><p id="min-latency" class="text-2xl font-bold">- ms</p></div>
+                        <div class="bg-gray-50 p-4 rounded-lg"><h4 class="text-sm font-medium text-gray-500">Max Latency</h4><p id="max-latency" class="text-2xl font-bold">- ms</p></div>
+                        <div class="bg-gray-50 p-4 rounded-lg"><h4 class="text-sm font-medium text-gray-500">Std Dev</h4><p id="std-dev" class="text-2xl font-bold">- ms</p></div>
+                        <div class="bg-green-100 text-green-800 p-4 rounded-lg"><h4 class="text-sm font-medium">Successful</h4><p id="success-count" class="text-2xl font-bold">0</p></div>
+                        <div class="bg-red-100 text-red-800 p-4 rounded-lg"><h4 class="text-sm font-medium">Failed</h4><p id="error-count" class="text-2xl font-bold">0</p></div>
+                    </div>
+
+                    <div class="chart-container"><canvas id="latency-chart"></canvas></div>
+                    <div id="error-log-container" class="mt-6 hidden"><h3 class="text-lg font-semibold mb-2">Error Log</h3><div id="error-log" class="max-h-40 overflow-y-auto bg-gray-50 p-3 rounded-md text-sm text-red-700"></div></div>
+                </div>
+
+                <!-- Single Request Results Content -->
+                <div id="single-request-results-container" class="hidden prose max-w-none py-6">
+                  <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-semibold">Request Result</h2>
+                    <div>
+                      <span id="single-status" class="text-lg font-semibold px-3 py-1 rounded-md"></span>
+                      <span id="single-time" class="text-lg font-semibold ml-4"></span>
+                    </div>
+                  </div>
+                  <div class="flex border-b mb-4">
+                      <button id="single-body-tab" class="py-2 px-4 font-semibold border-b-2 tab-active">Body</button>
+                      <button id="single-headers-tab" class="py-2 px-4 text-gray-500 font-semibold border-b-2 border-transparent hover:text-indigo-600">Headers</button>
+                  </div>
+                  <div id="single-body-content">
+                      <pre class="bg-gray-800 text-white text-sm p-4 rounded-lg overflow-auto max-h-[60vh]"><code id="single-body-output">Awaiting request...</code></pre>
+                  </div>
+                  <div id="single-headers-content" class="hidden">
+                      <table class="min-w-full divide-y divide-gray-200">
+                          <thead class="bg-gray-50"><tr><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Header</th><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Value</th></tr></thead>
+                          <tbody id="single-headers-body" class="bg-white divide-y divide-gray-200"></tbody>
+                      </table>
+                  </div>
+                </div>
+
+                 <!-- Help Content for Local API -->
+                <div id="help-local-api-content" class="hidden prose max-w-none py-6">
+                    <h3>Why does my local API (e.g., http://127.0.0.1:5000) fail?</h3>
+                    <p>If you see a "Failed to fetch" error for your local API, but `curl` commands work and you see requests hitting your server log, the issue is almost certainly a browser security feature called <strong>CORS (Cross-Origin Resource Sharing)</strong>.</p>
+                    
+                    <h4>The Cause: CORS Policy</h4>
+                    <p>When you load this HTML file from your computer (`file:///...`), its "origin" is considered `null`. For security, browsers block JavaScript from a page with one origin from reading data from a server at a different origin unless the server explicitly gives permission.</p>
+                    <p>Even though your server gets the request, it doesn't send back the required `Access-Control-Allow-Origin` header in its response. The browser sees this missing header and blocks the response, leading to the "Failed to fetch" error in the script.</p>
+                    
+                    <h4>The Solution: Enable CORS on Your Server</h4>
+                    <p>The solution is <strong>not</strong> to change this tool, but to configure your local server to send the correct CORS headers. This tells the browser that your server trusts requests coming from other origins.</p>
+
+                    <h5>Example (Python Flask Server):</h5>
+                    <p>If you're using Flask, the easiest way is with the `flask-cors` library.</p>
+                    <ol>
+                        <li>Install the library:
+                             <pre class="bg-gray-100 p-2 rounded text-sm"><code>pip install -U flask-cors</code></pre>
+                        </li>
+                        <li>Update your server code to enable CORS for all routes:
+                            <pre class="bg-gray-100 p-2 rounded text-sm"><code>from flask import Flask
+from flask_cors import CORS # 1. Import CORS
+
+app = Flask(__name__)
+CORS(app) # 2. Enable CORS on your app
+
+@app.route('/contract')
+def get_contract():
+    # Your API logic here...
+    return {'data': 'your data'}
+
+# ...rest of your server code...
+</code></pre>
+                        </li>
+                        <li>Restart your server. The performance test should now work correctly against `http://127.0.0.1:5000/contract`.</li>
+                    </ol>
+                     <p>This same principle applies to any backend framework (Node.js/Express, Ruby on Rails, etc.). You will need to find the appropriate library or middleware to enable CORS by adding the `Access-Control-Allow-Origin: *` header to your API responses.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Raw Data Table -->
+        <div id="raw-data-wrapper" class="mt-8 bg-white p-6 rounded-lg shadow-lg">
+            <h2 class="text-2xl font-semibold mb-4">Raw Data</h2>
+            <div class="overflow-x-auto max-h-96">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">#</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total (ms)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">DNS (ms)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">TTFB (ms)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Download (ms)</th>
+                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Body Snippet</th>
+                        </tr>
+                    </thead>
+                    <tbody id="results-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Rows will be injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- DOM Elements ---
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const sendSingleBtn = document.getElementById('send-single-btn');
+        const downloadBtn = document.getElementById('download-csv');
+        const resultsTableBody = document.getElementById('results-table-body');
+        const avgLatencyEl = document.getElementById('avg-latency');
+        const minLatencyEl = document.getElementById('min-latency');
+        const maxLatencyEl = document.getElementById('max-latency');
+        const stdDevEl = document.getElementById('std-dev');
+        const successCountEl = document.getElementById('success-count');
+        const errorCountEl = document.getElementById('error-count');
+        const progressBarContainer = document.getElementById('progress-container');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const errorLogContainer = document.getElementById('error-log-container');
+        const errorLog = document.getElementById('error-log');
+        const rawDataWrapper = document.getElementById('raw-data-wrapper');
+
+        // Mode switching elements
+        const perfModeTab = document.getElementById('perf-mode-tab');
+        const singleModeTab = document.getElementById('single-mode-tab');
+        const requestsContainer = document.getElementById('requests-container');
+        const delayContainer = document.getElementById('delay-container');
+        const perfButtons = document.getElementById('perf-buttons');
+        const singleButtonContainer = document.getElementById('single-button-container');
+        const singleRequestResultsContainer = document.getElementById('single-request-results-container');
+        
+        // Main content tabs
+        const resultsTab = document.getElementById('results-tab');
+        const helpLocalApiTab = document.getElementById('help-local-api-tab');
+        const resultsContent = document.getElementById('results-content');
+        const helpLocalApiContent = document.getElementById('help-local-api-content');
+
+
+        // Single request result elements
+        const singleStatusEl = document.getElementById('single-status');
+        const singleTimeEl = document.getElementById('single-time');
+        const singleBodyTab = document.getElementById('single-body-tab');
+        const singleHeadersTab = document.getElementById('single-headers-tab');
+        const singleBodyContent = document.getElementById('single-body-content');
+        const singleHeadersContent = document.getElementById('single-headers-content');
+        const singleBodyOutput = document.getElementById('single-body-output');
+        const singleHeadersBody = document.getElementById('single-headers-body');
+
+        // --- State Variables ---
+        let chart;
+        let results = [];
+        let isTesting = false;
+        let stopFlag = false;
+
+        // --- Initial Setup ---
+        const ctx = document.getElementById('latency-chart').getContext('2d');
+        window.onload = initializeChart;
+
+        // --- Event Listeners ---
+        startBtn.addEventListener('click', () => {
+             const { url, method, headers, body } = getFormValues();
+             const requests = parseInt(document.getElementById('requests').value, 10);
+             const delay = parseInt(document.getElementById('delay').value, 10);
+             if (url) startTest(url, method, headers, body, requests, delay);
+        });
+
+        stopBtn.addEventListener('click', () => {
+            if (isTesting) {
+                stopFlag = true;
+                progressText.textContent = 'Stopping...';
+            }
+        });
+
+        sendSingleBtn.addEventListener('click', () => {
+            const { url, method, headers, body } = getFormValues();
+            if (url) executeSingleRequest(url, method, headers, body);
+        });
+
+        downloadBtn.addEventListener('click', downloadCSV);
+
+        // Main mode tabs
+        perfModeTab.addEventListener('click', () => switchMode('perf'));
+        singleModeTab.addEventListener('click', () => switchMode('single'));
+
+        // Result content tabs
+        resultsTab.addEventListener('click', () => switchResultView('results'));
+        helpLocalApiTab.addEventListener('click', () => switchResultView('help-local-api'));
+
+        // Single result tabs
+        singleBodyTab.addEventListener('click', () => switchSingleResultTab('body'));
+        singleHeadersTab.addEventListener('click', () => switchSingleResultTab('headers'));
+
+
+        // --- Functions ---
+        
+        function initializeChart() {
+            if (chart) {
+                chart.destroy();
+            }
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Total Latency (ms)',
+                        data: [],
+                        borderColor: '#4f46e5',
+                        backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Request #'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Latency (ms)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+
+        function getFormValues() {
+            const url = document.getElementById('url').value;
+            if (!url) {
+                alert('API URL is required.');
+                return {};
+            }
+            const method = document.getElementById('method').value;
+            let headers, body;
+            try {
+                const headersString = document.getElementById('headers').value;
+                headers = headersString ? JSON.parse(headersString) : {};
+            } catch (e) { alert('Invalid JSON in Headers.'); return {}; }
+            try {
+                const bodyString = document.getElementById('body').value;
+                if (method !== 'GET' && method !== 'HEAD' && bodyString) {
+                    body = JSON.parse(bodyString);
+                }
+            } catch (e) { alert('Invalid JSON in Request Body.'); return {}; }
+            return { url, method, headers, body };
+        }
+
+        // --- Mode Switching Logic ---
+        function switchMode(mode) {
+            if (mode === 'perf') {
+                // Activate perf tab
+                perfModeTab.classList.add('tab-active');
+                singleModeTab.classList.remove('tab-active');
+                // Show perf config
+                requestsContainer.classList.remove('hidden');
+                delayContainer.classList.remove('hidden');
+                perfButtons.classList.remove('hidden');
+                singleButtonContainer.classList.add('hidden');
+                // Show perf results
+                resultsContent.classList.remove('hidden');
+                singleRequestResultsContainer.classList.add('hidden');
+                rawDataWrapper.classList.remove('hidden');
+
+            } else { // 'single' mode
+                // Activate single tab
+                singleModeTab.classList.add('tab-active');
+                perfModeTab.classList.remove('tab-active');
+                // Show single config
+                requestsContainer.classList.add('hidden');
+                delayContainer.classList.add('hidden');
+                perfButtons.classList.add('hidden');
+                singleButtonContainer.classList.remove('hidden');
+                // Show single results
+                resultsContent.classList.add('hidden');
+                singleRequestResultsContainer.classList.remove('hidden');
+                rawDataWrapper.classList.add('hidden');
+            }
+             // Ensure correct result/help view is shown
+            switchResultView('results');
+        }
+
+        function switchResultView(view) {
+             const isSingleMode = singleModeTab.classList.contains('tab-active');
+            
+            // Hide all content panels first
+            resultsContent.classList.add('hidden');
+            singleRequestResultsContainer.classList.add('hidden');
+            helpLocalApiContent.classList.add('hidden');
+            
+            // Deactivate all tabs
+            resultsTab.classList.remove('tab-active');
+            helpLocalApiTab.classList.remove('tab-active');
+
+            if (view === 'results') {
+                if (isSingleMode) {
+                    singleRequestResultsContainer.classList.remove('hidden');
+                } else {
+                    resultsContent.classList.remove('hidden');
+                }
+                resultsTab.classList.add('tab-active');
+            } else if (view === 'help-local-api') {
+                helpLocalApiContent.classList.remove('hidden');
+                helpLocalApiTab.classList.add('tab-active');
+            }
+        }
+
+        function switchSingleResultTab(tab) {
+            if (tab === 'body') {
+                singleBodyContent.classList.remove('hidden');
+                singleHeadersContent.classList.add('hidden');
+                singleBodyTab.classList.add('tab-active');
+                singleHeadersTab.classList.remove('tab-active');
+            } else { // 'headers' tab
+                singleHeadersContent.classList.remove('hidden');
+                singleBodyContent.classList.add('hidden');
+                singleHeadersTab.classList.add('tab-active');
+                singleBodyTab.classList.remove('tab-active');
+            }
+        }
+        
+        // --- Single Request Logic ---
+        async function executeSingleRequest(url, method, headers, body) {
+            sendSingleBtn.disabled = true;
+            sendSingleBtn.textContent = 'Sending...';
+            singleStatusEl.textContent = '';
+            singleStatusEl.className = 'text-lg font-semibold px-3 py-1 rounded-md'; // Reset class
+            singleTimeEl.textContent = '';
+            singleBodyOutput.textContent = 'Loading...';
+            singleHeadersBody.innerHTML = '';
+            
+            const startTime = performance.now();
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+                const requestOptions = { method, headers: new Headers(headers), signal: controller.signal };
+                if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+                    requestOptions.body = JSON.stringify(body);
+                    if (!requestOptions.headers.has('Content-Type')) {
+                        requestOptions.headers.append('Content-Type', 'application/json');
+                    }
+                }
+
+                const response = await fetch(url, requestOptions);
+                clearTimeout(timeoutId);
+                const endTime = performance.now();
+
+                // Populate Status and Time
+                singleTimeEl.textContent = `${Math.round(endTime - startTime)} ms`;
+                singleStatusEl.textContent = `${response.status} ${response.statusText}`;
+                
+                if (response.ok) {
+                    singleStatusEl.classList.add('bg-green-100', 'text-green-800');
+                } else {
+                    singleStatusEl.classList.add('bg-red-100', 'text-red-800');
+                }
+
+                // Populate Headers
+                let headersHtml = '';
+                for (const [key, value] of response.headers.entries()) {
+                    headersHtml += `<tr><td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${key}</td><td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">${value}</td></tr>`;
+                }
+                singleHeadersBody.innerHTML = headersHtml;
+
+                // Populate Body
+                const responseText = await response.text();
+                try {
+                    // Try to pretty-print if it's JSON
+                    const jsonObject = JSON.parse(responseText);
+                    singleBodyOutput.textContent = JSON.stringify(jsonObject, null, 2);
+                } catch (e) {
+                    singleBodyOutput.textContent = responseText || '(No response body)';
+                }
+
+            } catch (error) {
+                const endTime = performance.now();
+                singleTimeEl.textContent = `${Math.round(endTime - startTime)} ms`;
+                singleStatusEl.textContent = `Network Error`;
+                singleStatusEl.classList.add('bg-red-100', 'text-red-800');
+                singleBodyOutput.textContent = error.message;
+            } finally {
+                sendSingleBtn.disabled = false;
+                sendSingleBtn.textContent = 'Send Request';
+            }
+        }
+
+        // --- Performance Test Logic ---
+        async function startTest(url, method, headers, body, totalRequests, delay) {
+            resetUI();
+            isTesting = true; stopFlag = false;
+            for (let i = 1; i <= totalRequests; i++) {
+                if (stopFlag) break;
+                updateProgress(i, totalRequests);
+                try {
+                    if (i === 1) await new Promise(r => setTimeout(r, 150));
+                    const result = await runPerfRequest(url, method, headers, body, i);
+                    results.push(result);
+                    updateUIAfterRequest(result);
+                } catch (error) {
+                    const errorResult = { request: i, status: 'Error', total: 0, dns: 0, ttfb: 0, download: 0, bodySnippet: '', error: error.message };
+                    results.push(errorResult);
+                    updateUIAfterRequest(errorResult);
+                }
+                await new Promise(r => setTimeout(r, delay));
+            }
+            finishTest(totalRequests);
+        }
+
+        async function runPerfRequest(url, method, headers, body, requestNum) {
+            const startTime = performance.now();
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000);
+            const requestOptions = { method, headers: new Headers(headers), signal: controller.signal };
+            if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+                requestOptions.body = JSON.stringify(body);
+                if (!requestOptions.headers.has('Content-Type')) {
+                    requestOptions.headers.append('Content-Type', 'application/json');
+                }
+            }
+            const response = await fetch(url, requestOptions);
+            clearTimeout(timeoutId);
+            const responseEndTime = performance.now();
+            const responseText = await response.text();
+            const downloadEndTime = performance.now();
+            const totalTime = responseEndTime - startTime;
+            
+            // Simplified metrics collection
+            const entry = [...performance.getEntriesByName(response.url, "resource")].reverse().find(e => e.startTime >= startTime);
+            let dns = 0, ttfb = 0, download = 0;
+            if (entry) {
+                dns = entry.domainLookupEnd - entry.domainLookupStart;
+                ttfb = entry.responseStart - entry.requestStart;
+                download = downloadEndTime - responseEndTime;
+            } else { 
+                console.warn(`Perf metrics for req #${requestNum} not available. Using fallback timing.`);
+                download = downloadEndTime - responseEndTime;
+                ttfb = totalTime - download;
+             }
+            return { request: requestNum, status: `${response.status} ${response.statusText}`, total: parseFloat(totalTime.toFixed(2)), dns: parseFloat(dns.toFixed(2)), ttfb: parseFloat(ttfb.toFixed(2)), download: parseFloat(download.toFixed(2)), bodySnippet: responseText.substring(0, 200), error: null };
+        }
+        
+        function resetUI() {
+            results = [];
+            performance.clearResourceTimings();
+            startBtn.disabled = true; stopBtn.disabled = false; downloadBtn.disabled = true;
+            resultsTableBody.innerHTML = '';
+            errorLog.innerHTML = ''; errorLogContainer.classList.add('hidden');
+            ['avg-latency', 'min-latency', 'max-latency', 'std-dev'].forEach(id => { document.getElementById(id).textContent = '- ms'; });
+            successCountEl.textContent = '0'; errorCountEl.textContent = '0';
+            progressBar.style.width = '0%'; progressBarContainer.classList.remove('hidden'); progressText.textContent = '';
+            initializeChart();
+        }
+        function updateProgress(current, total) {
+            const percent = (current / total) * 100;
+            progressBar.style.width = `${percent}%`;
+            progressText.textContent = `Running request ${current} of ${total}...`;
+        }
+        function updateUIAfterRequest(result) { addResultToTable(result); updateChart(result); updateSummaryStats(); if (result.error) logError(result); }
+        function addResultToTable(result) { 
+            const row = document.createElement('tr');
+            const isError = result.status === 'Error';
+            row.className = isError ? 'bg-red-50' : 'bg-white';
+            const escapedSnippet = (result.bodySnippet || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            row.innerHTML = `<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${result.request}</td><td class="px-6 py-4 whitespace-nowrap text-sm ${isError ? 'text-red-600 font-semibold' : 'text-gray-500'}">${result.status}</td><td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${result.total}</td><td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${result.dns}</td><td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${result.ttfb}</td><td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${result.download}</td><td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono text-xs" title="${escapedSnippet}">${escapedSnippet}</td>`;
+            resultsTableBody.appendChild(row);
+        }
+        function updateChart(result) { 
+            chart.data.labels.push(result.request); 
+            chart.data.datasets[0].data.push(result.status !== 'Error' ? result.total : null); 
+            chart.update(); 
+        }
+        function updateSummaryStats() {
+            const successfulResults = results.filter(r => r.status !== 'Error');
+            const latencies = successfulResults.map(r => r.total);
+            const successCount = successfulResults.length;
+            const errorCount = results.length - successCount;
+
+            successCountEl.textContent = successCount;
+            errorCountEl.textContent = errorCount;
+
+            if (latencies.length > 0) {
+                const min = Math.min(...latencies);
+                const max = Math.max(...latencies);
+                const sum = latencies.reduce((a, b) => a + b, 0);
+                const avg = sum / latencies.length;
+                const stdDev = Math.sqrt(latencies.map(x => Math.pow(x - avg, 2)).reduce((a, b) => a + b, 0) / latencies.length);
+
+                minLatencyEl.textContent = `${min.toFixed(2)} ms`;
+                maxLatencyEl.textContent = `${max.toFixed(2)} ms`;
+                avgLatencyEl.textContent = `${avg.toFixed(2)} ms`;
+                stdDevEl.textContent = `${stdDev.toFixed(2)} ms`;
+            } else {
+                 ['avg-latency', 'min-latency', 'max-latency', 'std-dev'].forEach(id => { document.getElementById(id).textContent = '- ms'; });
+            }
+        }
+        function logError(result) {
+            errorLogContainer.classList.remove('hidden');
+            const errorEl = document.createElement('p');
+            errorEl.textContent = `Request #${result.request}: ${result.error || result.status}`;
+            errorLog.appendChild(errorEl);
+        }
+        function finishTest(totalRequests) {
+            isTesting = false; 
+            startBtn.disabled = false; 
+            stopBtn.disabled = true;
+            const finalCount = results.length;
+            if (finalCount > 0) { 
+                downloadBtn.disabled = false; 
+            }
+            progressText.textContent = stopFlag ? `Test stopped after ${finalCount} requests.` : `Test finished. Completed ${finalCount} of ${totalRequests} requests.`;
+        }
+        function downloadCSV() {
+            if (results.length === 0) return;
+            const headers = Object.keys(results[0]);
+            const csvRows = [headers.join(',')];
+            results.forEach(row => { const values = headers.map(header => `"${(''+(row[header] || '')).replace(/"/g, '""')}"`); csvRows.push(values.join(',')); });
+            const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('hidden', ''); a.setAttribute('href', url); a.setAttribute('download', 'api-performance-data.csv');
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        }
+
+    </script>
+</body>
+</html>
+
+
