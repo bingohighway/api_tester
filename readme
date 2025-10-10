@@ -1,3 +1,9 @@
+#!/bin/zsh
+
+echo "Creating the main documentation file: README.md..."
+
+# This script is formatted to avoid issues with backticks in web browsers
+cat > README.md << 'EOF'
 # WAF & API Gateway Testing Suite
 
 This project provides a comprehensive suite of tools designed to test the functionality, security contract enforcement, and performance of Web Application Firewalls (WAFs) and API Gateways.
@@ -22,7 +28,9 @@ This suite was generated on Friday, 10 October 2025.
 ## Setup & Usage
 
 Full setup and usage instructions are available in the [main README file](https://github.com/your-repo/your-project/blob/main/README.md).
-```
+EOF
+echo '```' >> README.md
+cat >> README.md << 'EOF'
 ## API Endpoint Details (`api.py`)
 
 The test API provides the following endpoints. A live version of this guide is available at `http://127.0.0.1:5000/usage`.
@@ -41,4 +49,7 @@ The test API provides the following endpoints. A live version of this guide is a
 | `/random`                   | GET    | Returns a random string with a strict contract length.       | Max value: 50                                          |
 | `/contract`                 | GET    | Returns the full OpenAPI contract for this API.              | N/A                                                    |
 | `/chars-contract`           | POST   | Accepts only alphanumeric strings, enforced by contract.     | Max length: 50, alphanumeric chars only                |
-```
+EOF
+echo '```' >> README.md
+
+echo "README.md file created successfully!"
