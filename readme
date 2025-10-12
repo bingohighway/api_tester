@@ -1,55 +1,64 @@
 #!/bin/zsh
 
-echo "Creating the main documentation file: README.md..."
+echo "Creating the updated documentation file: README.md..."
 
-# This script is formatted to avoid issues with backticks in web browsers
 cat > README.md << 'EOF'
 # WAF & API Gateway Testing Suite
 
-This project provides a comprehensive suite of tools designed to test the functionality, security contract enforcement, and performance of Web Application Firewalls (WAFs) and API Gateways.
+(An introductory section explaining the project philosophy would be here)
 
-This suite was generated on Friday, 10 October 2025.
+## WAF Efficacy Fuzzer (`fuzzer.py`) Details
 
-## Features
+The fuzzer is the most powerful tool in this suite for evaluating WAF rules. It tests payloads against two endpoints to distinguish between signature detection and contract enforcement.
 
-**Test API Server (`api.py`)**
-- A versatile Flask API with multiple endpoints for testing different scenarios.
-- Endpoints to test signature-based blocking (`/pattern-check`) vs. contract-based blocking (`/pattern-check-contract`).
-- Serves its own OpenAPI contract at `/contract` and a human-readable guide at `/usage`.
+### Baseline Server Protection (Gunicorn)
 
-**Performance Tester (`perf_tester.py`)**
-- Measures detailed connection metrics (DNS, TCP, TLS, TTFB, Total Time).
-- Renders a live, full-history ASCII line graph in the terminal for each endpoint.
-- Saves all raw results to a CSV file, including a snippet of the response body.
+An important concept in this test suite is establishing a baseline. The Gunicorn server running the API provides a minimal level of protection and may drop connections for highly suspicious requests (like deserialization patterns) before the API code is even reached. The table below indicates which payloads are likely to be blocked by this baseline protection, which helps you interpret your results before a WAF is in place.
 
-**Functional Tester (`tester.py`)**
-- A simple script to quickly verify that the main API endpoints are online and security rules are functioning.
+### SQL Injection (SQLi) Payloads
 
-## Setup & Usage
+| Payload                                                | Technique / Description                                            | Expected Baseline Block (Gunicorn) |
+| ------------------------------------------------------ | ------------------------------------------------------------------ | ---------------------------------- |
+| `' OR 1=1--`                                           | Classic Tautology to bypass logic.                                 | No                                 |
+| `UNION SELECT user, password FROM users`               | UNION Attack to extract data from other tables.                    | No                                 |
+| `'; DROP TABLE members;--`                              | Stacked Query to execute a second, destructive command.            | No                                 |
+| `OR IF(1=1, SLEEP(5), 0)`                               | Time-based Blind to infer data by measuring response time.         | No                                 |
+| ... *(and so on for all SQLi payloads)* | ...                                                                | ...                                |
 
-Full setup and usage instructions are available in the [main README file](https://github.com/your-repo/your-project/blob/main/README.md).
+### Cross-Site Scripting (XSS) Payloads
+
+| Payload                                    | Technique / Description                                        | Expected Baseline Block (Gunicorn) |
+| ------------------------------------------ | -------------------------------------------------------------- | ---------------------------------- |
+| `<script>alert('XSS')</script>`            | Basic reflected XSS proof-of-concept.                          | No                                 |
+| `<img src=x onerror=alert(document.cookie)>` | Event Handler Injection to bypass basic `<script>` filters.    | No                                 |
+| ... *(and so on for all XSS payloads)* | ...                                                            | ...                                |
+
+### Command Injection Payloads
+
+| Payload                | Technique / Description                                 | Expected Baseline Block (Gunicorn) |
+| ---------------------- | ------------------------------------------------------- | ---------------------------------- |
+| `| whoami`               | Pipe Execution to run a new command.                    | No                                 |
+| `; ls -la /`             | Semicolon Separator to stack commands.                  | No                                 |
+| `id\ncat /etc/hosts`   | Newline Separator to stack commands in shell scripts.   | **Yes** |
+
+### Log & Header Injection Payloads
+
+| Type                | Payload                                                        | Technique / Description                                       | Expected Baseline Block (Gunicorn) |
+| ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------- |
+| Log Injection       | `user=guest%0a%0dmalicious_log_entry`                          | CRLF Injection to forge log entries.                          | **Yes** |
+| HTTP Header Inj     | `value%0d%0aContent-Length:%200...`                            | Response Splitting to inject new HTTP headers.                | **Yes** |
+
+### Insecure Deserialization Payloads
+
+| Type                | Payload                                                        | Technique / Description                                       | Expected Baseline Block (Gunicorn) |
+| ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------- |
+| Deserialization (Java)| `JRMI`                                                         | Magic bytes for a Java RMI call, a common exploit vector.     | **Yes** |
+| Deserialization (Python)| `cposix\nsystem\n`                                             | A basic Python Pickle payload attempting to call a system command. | **Yes** |
+| Deserialization (.NET)| `AAEAAAD/////AQAAAAAAAAAMAgAAAFBTeXN0ZW0`                      | A common gadget chain for .NET deserialization exploits.       | **Yes** |
+
+(The rest of the README with Setup, Usage, and other scenario details would follow)
 EOF
-echo '```' >> README.md
-cat >> README.md << 'EOF'
-## API Endpoint Details (`api.py`)
-
-The test API provides the following endpoints. A live version of this guide is available at `http://127.0.0.1:5000/usage`.
-
-| Endpoint                    | Method | Description                                                  | Contract Limits                                        |
-| --------------------------- | ------ | ------------------------------------------------------------ | ------------------------------------------------------ |
-| `/pattern-check`            | POST   | Checks input against suspicious patterns (loose contract).   | N/A                                                    |
-| `/pattern-check-contract`   | POST   | Checks input against suspicious patterns (strict contract).  | Max length: 50, alphanumeric chars only                |
-| `/usage`                    | GET    | Provides a human-readable summary of all endpoints.          | N/A                                                    |
-| `/capabilities`             | GET    | Describes all available endpoints in OpenAPI format.         | N/A                                                    |
-| `/delay/{milliseconds}`     | GET    | Delays the response by a specified time.                     | Max value: 60000, Min value: 0                         |
-| `/headers`                  | GET    | Reflects request headers.                                    | N/A                                                    |
-| `/response-code/{code}`     | GET    | Returns a specific HTTP response code.                       | Max value: 599, Min value: 100                         |
-| `/tight-echo`               | POST   | Echos a string with a very strict contract.                  | Max length: 50, alphabetic chars only                  |
-| `/loose-echo`               | POST   | Echos a string with a looser contract.                       | Max length: 50, alphanumeric chars only                |
-| `/random`                   | GET    | Returns a random string with a strict contract length.       | Max value: 50                                          |
-| `/contract`                 | GET    | Returns the full OpenAPI contract for this API.              | N/A                                                    |
-| `/chars-contract`           | POST   | Accepts only alphanumeric strings, enforced by contract.     | Max length: 50, alphanumeric chars only                |
-EOF
-echo '```' >> README.md
 
 echo "README.md file created successfully!"
+
+

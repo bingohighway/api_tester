@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 import subprocess,json,time,datetime,csv,os,argparse,tempfile
 from statistics import mean
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from collections import defaultdict
 class Colors:
     GREEN='\033[92m';RESET='\033[0m';BOLD='\033[1m';CYAN='\033[96m';YELLOW='\033[93m';DIM='\033[2m'
 BASE_URL="http://127.0.0.1:5000"
 ENDPOINTS_TO_TEST=[
     {"name":"GET /usage","method":"GET","path":"/usage"},
-    {"name":"GET /capabilities","method":"GET","path":"/capabilities"},
-    {"name":"POST /pattern-check","method":"POST","path":"/pattern-check","headers":{"Content-Type":"application/json"},"body":{"data":"benign string"}},
-    {"name":"POST /pattern-check-contract","method":"POST","path":"/pattern-check-contract","headers":{"Content-Type":"application/json"},"body":{"data":"benignstring"}},
-    {"name":"GET /delay/200ms","method":"GET","path":"/delay/200"},
+    {"name":"POST /hex-decode-check", "method":"POST", "path":"/hex-decode-check", "headers":{"Content-Type":"application/json"}, "body":{"data": "68656c6c6f"}},
+    {"name":"POST /url-decode-diagnostic", "method":"POST", "path":"/url-decode-diagnostic", "headers":{"Content-Type":"application/json"}, "body":{"data": quote("hello world")}},
 ]
 def measure_request(endpoint_config):
     full_url=f"{endpoint_config['base_url']}{endpoint_config['path']}";url_scheme=urlparse(full_url).scheme;curl_format=json.dumps({"status_code":"%{http_code}","dns_time_s":"%{time_namelookup}","tcp_time_s":"%{time_connect}","tls_time_s":"%{time_appconnect}","ttfb_s":"%{time_starttransfer}","total_time_s":"%{time_total}"})
