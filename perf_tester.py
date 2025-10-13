@@ -5,26 +5,39 @@ from urllib.parse import urlparse, quote
 from collections import defaultdict
 class Colors:
     GREEN='\033[92m';RESET='\033[0m';BOLD='\033[1m';CYAN='\033[96m';YELLOW='\033[93m';DIM='\033[2m'
-BASE_URL="http://127.0.0.1:5000"
+BASE_URL="http://127.0.0.1:8000" # <-- MODIFIED TO PORT 8000
 ENDPOINTS_TO_TEST=[
     {"name":"GET /usage","method":"GET","path":"/usage"},
     {"name":"POST /hex-decode-check", "method":"POST", "path":"/hex-decode-check", "headers":{"Content-Type":"application/json"}, "body":{"data": "68656c6c6f"}},
     {"name":"POST /url-decode-diagnostic", "method":"POST", "path":"/url-decode-diagnostic", "headers":{"Content-Type":"application/json"}, "body":{"data": quote("hello world")}},
+    {"name":"GET /delay/200ms", "method":"GET", "path":"/delay/200"},
 ]
 def measure_request(endpoint_config):
-    full_url=f"{endpoint_config['base_url']}{endpoint_config['path']}";url_scheme=urlparse(full_url).scheme;curl_format=json.dumps({"status_code":"%{http_code}","dns_time_s":"%{time_namelookup}","tcp_time_s":"%{time_connect}","tls_time_s":"%{time_appconnect}","ttfb_s":"%{time_starttransfer}","total_time_s":"%{time_total}"})
+    full_url=f"{endpoint_config['base_url']}{endpoint_config['path']}";url_scheme=urlparse(full_url).scheme;curl_format=json.dumps({"status_code":"%{http_code}","dns_time_s":"%{time_namelookup}","tcp_time_s":"%{time_connect}","tls_time_s":"%{time_appconnect}","ttfb_s":"%{time_starttransfer}","total_time_s":"%{time_total}","http_handler_header":"%{header_out}","http_response_header":"%{header_in}"})
     with tempfile.NamedTemporaryFile(mode='w+',delete=True,encoding='utf-8') as body_file:
-        command=["curl","-s","-o",body_file.name,"-w",curl_format,full_url];command.extend(["-X",endpoint_config.get("method","GET")])
+        command=["curl","-s","-o",body_file.name,"-w",curl_format,full_url,"--include"];command.extend(["-X",endpoint_config.get("method","GET")])
         for key,value in endpoint_config.get("headers",{}).items():command.extend(["-H",f"{key}: {value}"])
         if"body"in endpoint_config:command.extend(["-d",json.dumps(endpoint_config["body"])])
         try:
-            result=subprocess.run(command,capture_output=True,text=True,check=True);body_file.seek(0);snippet=body_file.read(50).replace('\n',' ');raw_data_s=json.loads(result.stdout)
+            result=subprocess.run(command,capture_output=True,text=True,check=True);body_file.seek(0);
+            body_content=body_file.read();
+            snippet=body_content.split('\r\n\r\n')[-1][:50].replace('\n',' ');
+            raw_data_s=json.loads(result.stdout);
+            
+            # Extract X-HTTP-Handler from response headers
+            handler_header = 'N/A'
+            response_headers_raw = raw_data_s.get('http_response_header', '')
+            for line in response_headers_raw.split('\n'):
+                if line.startswith('X-Http-Handler:'):
+                    handler_header = line.split(': ')[1].strip()
+                    break
+
             timing_data_ms={"dns_time_ms":round(float(raw_data_s['dns_time_s'])*1000,3),"tcp_time_ms":round(float(raw_data_s['tcp_time_s'])*1000,3),"ttfb_ms":round(float(raw_data_s['ttfb_s'])*1000,3),"total_time_ms":round(float(raw_data_s['total_time_s'])*1000,3)}
             if url_scheme=='https':
                 tls_time_ms=round(float(raw_data_s['tls_time_s'])*1000,3);timing_data_ms['tls_time_ms']=tls_time_ms;timing_data_ms['tls_handshake_ms']=round(tls_time_ms-timing_data_ms['tcp_time_ms'],3)
             else:
                 timing_data_ms['tls_time_ms']='N/A';timing_data_ms['tls_handshake_ms']='N/A'
-            return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":raw_data_s['status_code'],"body_snippet":snippet,**timing_data_ms}
+            return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":raw_data_s['status_code'],"body_snippet":snippet,"http_handler":handler_header,**timing_data_ms}
         except FileNotFoundError:print(f"{Colors.BOLD}ERROR: `curl` not found.{Colors.RESET}");exit(1)
         except(subprocess.CalledProcessError,json.JSONDecodeError)as e:return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":"000","error":str(e),"body_snippet":""}
 def draw_dashboard(results,terminal_width,current_test_info=""):
@@ -59,11 +72,11 @@ def draw_dashboard(results,terminal_width,current_test_info=""):
             if end_pos>mid_pos+len(label_mid):scale_labels+=" "*(end_pos-(mid_pos+len(label_mid)))+label_end
         print(scale_labels);print(f"{Colors.DIM}  Recent Queries:{Colors.RESET}")
         for res in endpoint_results[-LOG_HISTORY_COUNT:]:
-            status=res.get('status_code','ERR');time_val=res.get('total_time_ms',0);status_color=Colors.GREEN if str(status).startswith('2')else Colors.YELLOW;print(f"  - {res.get('timestamp','')[11:23]} | Status: {status_color}{status}{Colors.RESET} | Total: {time_val:.3f}ms")
+            status=res.get('status_code','ERR');time_val=res.get('total_time_ms',0);status_color=Colors.GREEN if str(status).startswith('2')else Colors.YELLOW;print(f"  - {res.get('timestamp','')[11:23]} | Status: {status_color}{status}{Colors.RESET} | Total: {time_val:.3f}ms | Handler: {res.get('http_handler')}")
         print("")
 def main():
     parser=argparse.ArgumentParser(description="API Performance Measurement Tool.");parser.add_argument("--base-url",default=BASE_URL,help="Base URL of the API to test.");parser.add_argument("--runs",type=int,default=50,help="Number of requests to make *per endpoint*.");parser.add_argument("--delay",type=int,default=100,help="Delay between requests in milliseconds.");args=parser.parse_args();timestamp=datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S");csv_filename=f"performance_results_{timestamp}.csv"
-    csv_headers=["timestamp","name","status_code","body_snippet","dns_time_ms","tcp_time_ms","tls_time_ms","tls_handshake_ms","ttfb_ms","total_time_ms","error"]
+    csv_headers=["timestamp","name","status_code","body_snippet","http_handler","dns_time_ms","tcp_time_ms","tls_time_ms","tls_handshake_ms","ttfb_ms","total_time_ms","error"]
     with open(csv_filename,"w",newline="",encoding='utf-8')as f:
         writer=csv.DictWriter(f,fieldnames=csv_headers);writer.writeheader();all_results=[];terminal_width=100
         try:terminal_width,_=os.get_terminal_size()

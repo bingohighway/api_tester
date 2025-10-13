@@ -1,17 +1,35 @@
 #!/bin/zsh
 
-echo "Creating the PERMISSIVE API server file: api.py..."
+echo "Creating the PERMISSIVE API server file: api.py (Port 8000)..."
 cat > api.py << 'EOF'
 #!/usr/bin/env python3
 import time, random, string, argparse, json, re
 from flask import Flask, request, jsonify, Response
 from urllib.parse import unquote
 
-parser = argparse.ArgumentParser(description='A versatile Flask Test API for evaluating WAFs and API Gateways.', formatter_class=argparse.RawTextHelpFormatter)
+# --- Argument Parsing ---
+parser = argparse.ArgumentParser(
+    description='A versatile Flask Test API for evaluating WAFs and API Gateways.',
+    formatter_class=argparse.RawTextHelpFormatter
+)
 parser.add_argument('--timing-allow-origin', dest='tao', action='store_true', help='Include the Timing-Allow-Origin: * header in all responses.')
+parser.add_argument('-v', '--verbose', action='store_true', help="Enable verbose logging to print the body of every request to the server's console.")
 args = parser.parse_args()
 
+# --- Flask App Initialization ---
 app = Flask(__name__)
+
+@app.before_request
+def log_request_body():
+    """If verbose mode is on, this logs the body of incoming requests."""
+    if args.verbose and request.data:
+        DIM = '\033[2m'; RESET = '\033[0m'
+        body_to_log = ""
+        try:
+            body_to_log = json.dumps(request.get_json())
+        except Exception:
+            body_to_log = request.get_data(as_text=True)
+        print(f"{DIM}[VERBOSE] Request to {request.path} received with body: {body_to_log}{RESET}", flush=True)
 
 SUSPICIOUS_PATTERNS = {
     "SQLi Tautology": re.compile(r"'.*?OR.*?'\d+'\s*=\s*'\d+'", re.IGNORECASE),
@@ -24,7 +42,7 @@ SUSPICIOUS_PATTERNS = {
 
 API_CONTRACT = {
     "openapi": "3.0.0",
-    "info": { "title": "WAF Test API", "version": "1.9.0", "description": "An intentionally permissive API to test WAFs and API Gateways." },
+    "info": { "title": "WAF Test API", "version": "1.9.1", "description": "An intentionally permissive API to test WAFs and API Gateways." },
     "paths": {
         "/fuzz-target-weak": { "post": { "summary": "Fuzzing target with a weak/loose contract.", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string"}}}}}}}},
         "/fuzz-target-strict": { "post": { "summary": "Fuzzing target with a strict (alphanumeric) contract.", "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "string", "pattern": "^[a-zA-Z0-9]+$"}}}}}}}},
@@ -49,68 +67,56 @@ API_CONTRACT = {
 def add_custom_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*';
     if args.tao: response.headers['Timing-Allow-Origin'] = '*'
-    response.headers['X-Content-Type-Options'] = 'nosniff'; return response
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    server_software = request.environ.get('SERVER_SOFTWARE', 'Unknown')
+    response.headers['X-HTTP-Handler'] = server_software
+    return response
 
 # --- Endpoint Functions ---
-# NOTE: All functions below are intentionally permissive and do NOT enforce contracts.
-# This makes them a pure test target for a WAF or API Gateway.
 
 @app.route('/')
 def index(): return jsonify({"message": "Welcome. See /usage for details."})
-
 @app.route('/usage')
 def usage(): return jsonify(API_CONTRACT['paths'])
-
 @app.route('/capabilities')
 def capabilities(): return jsonify(API_CONTRACT['paths'])
-
 @app.route('/contract')
 def contract(): return jsonify(API_CONTRACT)
-
 @app.route('/delay/<int:milliseconds>')
 def delay(milliseconds):
     time.sleep(milliseconds / 1000.0)
     return jsonify({"status": "success", "delay_ms": milliseconds})
-
 @app.route('/headers')
 def headers(): return jsonify({key: value for key, value in request.headers.items()})
-
 @app.route('/response-code/<int:code>')
 def response_code(code):
     return Response(f"Response with code {code}", status=code)
-
 @app.route('/tight-echo', methods=['POST'])
 def tight_echo():
     return jsonify({"echo": request.json.get('data', '')})
-
 @app.route('/loose-echo', methods=['POST'])
 def loose_echo():
     return jsonify({"echo": request.json.get('data', '')})
-
 @app.route('/random')
 def random_string():
     try: length = int(request.args.get('length', 10))
     except (ValueError, TypeError): return jsonify({"error": "Invalid length parameter."}), 400
     return jsonify({"random_string": ''.join(random.choice(string.ascii_letters+string.digits) for _ in range(length)), "length": length})
-
 @app.route('/chars-contract', methods=['POST'])
 def chars_contract():
     return jsonify({"status": "success", "message": "data received by API", "data_received": request.json.get('data')})
-
 @app.route('/fuzz-target-weak', methods=['POST'])
 def fuzz_target_weak():
     data = request.json.get('data', '')
     for name, pattern in SUSPICIOUS_PATTERNS.items():
         if pattern.search(data): return jsonify({"status": "pattern_received", "pattern_name": name})
     return jsonify({"status": "pattern_not_recognized"})
-
 @app.route('/fuzz-target-strict', methods=['POST'])
 def fuzz_target_strict():
     data = request.json.get('data', '')
     for name, pattern in SUSPICIOUS_PATTERNS.items():
         if pattern.search(data): return jsonify({"status": "pattern_received", "pattern_name": name})
     return jsonify({"status": "pattern_not_recognized"})
-
 @app.route('/url-decode-diagnostic', methods=['POST'])
 def url_decode_diagnostic():
     encoded_data = request.json.get('data', ''); decoded_string = unquote(encoded_data)
@@ -120,7 +126,6 @@ def url_decode_diagnostic():
         "contains_script_tag": bool(re.search(r"<script", decoded_string, re.IGNORECASE))
     }
     return jsonify({ "status": "analysis_complete", "original_length": len(encoded_data), "decoded_length": len(decoded_string), "analysis": analysis })
-
 @app.route('/hex-decode-check', methods=['POST'])
 def hex_decode_check():
     hex_data = request.json.get('data','');
@@ -129,7 +134,6 @@ def hex_decode_check():
     for n,p in SUSPICIOUS_PATTERNS.items():
         if p.search(decoded_string): return jsonify({"status":"match_found_after_decode","pattern_name":n})
     return jsonify({"status":"no_match_found_after_decode"})
-
 @app.route('/pattern-check', methods=['POST'])
 def pattern_check():
     data = request.json.get('data', '');
@@ -137,7 +141,6 @@ def pattern_check():
     for name, pattern in SUSPICIOUS_PATTERNS.items():
         if pattern.search(data): return jsonify({"status": "match_found", "pattern_name": name})
     return jsonify({"status": "no_match_found"})
-
 @app.route('/pattern-check-contract', methods=['POST'])
 def pattern_check_contract():
     data = request.json.get('data', '');
@@ -147,15 +150,16 @@ def pattern_check_contract():
     return jsonify({"status": "no_match_found"})
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Flask's built-in development server (Werkzeug), highly permissive. Now runs on 8000.
+    app.run(debug=True, port=8000, host='0.0.0.0')
 EOF
 
-echo "Creating the functional test script: tester.py..."
+echo "Creating the functional test script: tester.py (Port 8000)..."
 cat > tester.py << 'EOF'
 import requests, time, json
 from urllib.parse import quote
 
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = "http://127.0.0.1:8000" # <-- MODIFIED TO PORT 8000
 HEADERS = {'User-Agent': 'WAF-Tester-Client/1.0', 'Content-Type': 'application/json'}
 
 def print_test(name, success, details=""):
@@ -180,6 +184,16 @@ def test_delay():
         print_test("Response delay is accurate", success, f"Expected ~{delay_ms}ms, Got {duration_s*1000:.2f}ms")
     except requests.exceptions.RequestException as e:
         print_test("Response delay is accurate", False, f"Request failed: {e}")
+
+def test_headers():
+    print("\n--- Testing /headers Endpoint ---")
+    try:
+        response = requests.get(f"{BASE_URL}/headers", headers=HEADERS)
+        data = response.json()
+        success = response.status_code == 200 and data.get("User-Agent") == HEADERS['User-Agent']
+        print_test("Reflects custom User-Agent header", success, f"Sent: {HEADERS['User-Agent']}")
+    except requests.exceptions.RequestException as e:
+        print_test("Reflects custom User-Agent header", False, f"Request failed: {e}")
 
 def test_response_codes():
     print("\n--- Testing /response-code Endpoint ---")
@@ -243,6 +257,7 @@ def main():
     
     test_usage_endpoint()
     test_delay()
+    test_headers()
     test_response_codes()
     test_contract_security()
     test_pattern_blocking()
@@ -254,12 +269,12 @@ if __name__ == "__main__":
     main()
 EOF
 
-echo "Creating the WAF fuzzer script: fuzzer.py..."
+echo "Creating the WAF fuzzer script: fuzzer.py (Port 8000)..."
 cat > fuzzer.py << 'EOF'
 #!/usr/bin/env python3
 import requests, time, json, datetime, csv, argparse
 
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = "http://127.0.0.1:8000" # <-- MODIFIED TO PORT 8000
 HEADERS = {'User-Agent': 'WAF-Fuzzer/1.0', 'Content-Type': 'application/json'}
 class Colors:
     GREEN = '\033[92m'; RESET = '\033[0m'; BOLD = '\033[1m'; RED = '\033[91m'; DIM = '\033[2m'
@@ -290,7 +305,7 @@ PAYLOADS = [
     {"type": "Cmd Injection", "description": "Logical OR", "payload": "|| ping -c 4 evil.com"},
     {"type": "Cmd Injection", "description": "Backticks", "payload": "`uname -a`"},
     {"type": "Cmd Injection", "description": "Command Substitution", "payload": "$(reboot)"},
-    {"type": "Cmd Injection", "description": "Newline Separator", "payload": "id\ncat /etc/hosts"},
+    {"type": "Cmd Injection", "description": "Newline Separator", "payload": "id\ncat /etc/hosts", "gunicorn_block": True},
     {"type": "Path Traversal", "description": "Parent Directory", "payload": "../../etc/passwd"},
     {"type": "Path Traversal", "description": "Root Directory", "payload": "/etc/shadow"},
     {"type": "Path Traversal", "description": "Windows Directory", "payload": "..\\..\\..\\windows\\win.ini"},
@@ -302,28 +317,32 @@ PAYLOADS = [
     {"type": "SSRF", "description": "AWS Metadata Service", "payload": "http://169.254.169.254/latest/meta-data/"},
     {"type": "SSRF", "description": "GCP Metadata Service", "payload": "http://metadata.google.internal/computeMetadata/v1/"},
     {"type": "SSRF", "description": "Internal IP", "payload": "http://10.0.0.1/"},
-    {"type": "Log Injection", "description": "Newline Characters", "payload": "user=guest%0a%0dmalicious_log_entry"},
-    {"type": "HTTP Header Inj", "description": "Response Splitting", "payload": "value%0d%0aContent-Length:%200%0d%0a%0d%0aHTTP/1.1%20200%20OK"},
-    {"type": "Deserialization", "description": "Java RMI Header", "payload": "JRMI"},
+    {"type": "Log Injection", "description": "Newline Characters", "payload": "user=guest%0a%0dmalicious_log_entry", "gunicorn_block": True},
+    {"type": "HTTP Header Inj", "description": "Response Splitting", "payload": "value%0d%0aContent-Length:%200%0d%0a%0d%0aHTTP/1.1%20200%20OK", "gunicorn_block": True},
+    {"type": "Deserialization", "description": "Java RMI Header", "payload": "JRMI", "gunicorn_block": True},
+    {"type": "Deserialization", "description": "Python Pickle", "payload": "cposix\nsystem\n", "gunicorn_block": True},
+    {"type": "Deserialization", "description": ".NET Gadget", "payload": "AAEAAAD/////AQAAAAAAAAAMAgAAAFBTeXN0ZW0", "gunicorn_block": True},
 ]
-def print_result(attack_type, contract_type, result, details=""):
+def print_result(attack_info, contract_type, result, details=""):
     result_color = Colors.GREEN if result == "BLOCKED" else Colors.RED
-    print(f"  [{attack_type:18s}] [{contract_type:14s}] Result: {result_color}{result}{Colors.RESET} | {details}")
+    note = ""
+    if result == "BLOCKED" and attack_info.get("gunicorn_block"): note = f" {Colors.DIM}(Expected Gunicorn block){Colors.RESET}"
+    print(f"  [{attack_info['type']:18s}] [{contract_type:14s}] Result: {result_color}{result}{Colors.RESET} | {details}{note}")
 def run_test(endpoint, contract_type, attack_info, writer, verbose=False):
     payload = attack_info['payload']; full_url = f"{BASE_URL}{endpoint}"; json_body = {"data": payload}
     if verbose: print(f"{Colors.DIM}  ------------------------------------------------------\n  VERBOSE: Sending Request...\n  - URL:     {full_url}\n  - Method:  POST\n  - Headers: {json.dumps(HEADERS)}\n  - Body:    {json.dumps(json_body)}\n  ------------------------------------------------------{Colors.RESET}")
-    result_data = { "timestamp": datetime.datetime.utcnow().isoformat(), "attack_type": attack_info['type'], "description": attack_info['description'], "payload": payload, "contract_type": contract_type, "result": "", "http_status": 0, "response_body": "" }
+    result_data = { "timestamp": datetime.datetime.utcnow().isoformat(), "attack_type": attack_info['type'], "description": attack_info['description'], "payload": payload, "contract_type": contract_type, "expected_gunicorn_block": attack_info.get("gunicorn_block", False), "http_handler": "N/A", "result": "", "http_status": "N/A", "response_body": "" }
     try:
         res = requests.post(full_url, json=json_body, headers=HEADERS, timeout=2)
-        result_data["http_status"] = res.status_code; response_json = {}
+        result_data["http_status"] = res.status_code; result_data["http_handler"] = res.headers.get('X-HTTP-Handler', 'N/A'); response_json = {}
         try: response_json = res.json(); result_data["response_body"] = json.dumps(response_json)
         except json.JSONDecodeError: result_data["response_body"] = res.text[:200]
         if response_json.get("status") == "pattern_received":
-            result_data["result"] = "ALLOWED"; print_result(attack_info['type'], contract_type, "ALLOWED", f"WAF FAILED - API received: {response_json.get('pattern_name', 'N/A')}")
+            result_data["result"] = "ALLOWED"; print_result(attack_info, contract_type, "ALLOWED", f"WAF FAILED - API received: {response_json.get('pattern_name', 'N/A')}")
         else:
-            result_data["result"] = "BLOCKED"; print_result(attack_info['type'], contract_type, "BLOCKED", f"WAF Block Page or API rejection (Status: {res.status_code})")
+            result_data["result"] = "BLOCKED"; print_result(attack_info, contract_type, "BLOCKED", f"WAF Block Page or API rejection (Status: {res.status_code})")
     except requests.exceptions.RequestException as e:
-        result_data["result"] = "BLOCKED"; result_data["response_body"] = str(e); print_result(attack_info['type'], contract_type, "BLOCKED", "Request failed (e.g., connection reset by WAF)")
+        result_data["result"] = "BLOCKED"; result_data["response_body"] = str(e); print_result(attack_info, contract_type, "BLOCKED", "Request failed (No HTTP Response)")
     writer.writerow(result_data)
 def main():
     parser = argparse.ArgumentParser(description="A comprehensive fuzzer to test WAF efficacy.")
@@ -331,7 +350,7 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode to print full request details.")
     args = parser.parse_args(); print(f"{Colors.BOLD}--- Starting WAF Efficacy Fuzzer against {BASE_URL} ---\n")
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"); csv_filename = f"fuzz_results_{timestamp}.csv"
-    csv_headers = ["timestamp", "attack_type", "description", "payload", "contract_type", "result", "http_status", "response_body"]
+    csv_headers = ["timestamp", "attack_type", "description", "payload", "contract_type", "expected_gunicorn_block", "result", "http_status", "http_handler", "response_body"]
     with open(csv_filename, "w", newline="", encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=csv_headers); writer.writeheader()
         total_payloads = len(PAYLOADS)
@@ -344,7 +363,7 @@ def main():
 if __name__ == "__main__": main()
 EOF
 
-echo "Creating performance test script: perf_tester.py..."
+echo "Creating performance test script: perf_tester.py (Port 8000)..."
 cat > perf_tester.py << 'EOF'
 #!/usr/bin/env python3
 import subprocess,json,time,datetime,csv,os,argparse,tempfile
@@ -353,26 +372,39 @@ from urllib.parse import urlparse, quote
 from collections import defaultdict
 class Colors:
     GREEN='\033[92m';RESET='\033[0m';BOLD='\033[1m';CYAN='\033[96m';YELLOW='\033[93m';DIM='\033[2m'
-BASE_URL="http://127.0.0.1:5000"
+BASE_URL="http://127.0.0.1:8000" # <-- MODIFIED TO PORT 8000
 ENDPOINTS_TO_TEST=[
     {"name":"GET /usage","method":"GET","path":"/usage"},
     {"name":"POST /hex-decode-check", "method":"POST", "path":"/hex-decode-check", "headers":{"Content-Type":"application/json"}, "body":{"data": "68656c6c6f"}},
     {"name":"POST /url-decode-diagnostic", "method":"POST", "path":"/url-decode-diagnostic", "headers":{"Content-Type":"application/json"}, "body":{"data": quote("hello world")}},
+    {"name":"GET /delay/200ms", "method":"GET", "path":"/delay/200"},
 ]
 def measure_request(endpoint_config):
-    full_url=f"{endpoint_config['base_url']}{endpoint_config['path']}";url_scheme=urlparse(full_url).scheme;curl_format=json.dumps({"status_code":"%{http_code}","dns_time_s":"%{time_namelookup}","tcp_time_s":"%{time_connect}","tls_time_s":"%{time_appconnect}","ttfb_s":"%{time_starttransfer}","total_time_s":"%{time_total}"})
+    full_url=f"{endpoint_config['base_url']}{endpoint_config['path']}";url_scheme=urlparse(full_url).scheme;curl_format=json.dumps({"status_code":"%{http_code}","dns_time_s":"%{time_namelookup}","tcp_time_s":"%{time_connect}","tls_time_s":"%{time_appconnect}","ttfb_s":"%{time_starttransfer}","total_time_s":"%{time_total}","http_handler_header":"%{header_out}","http_response_header":"%{header_in}"})
     with tempfile.NamedTemporaryFile(mode='w+',delete=True,encoding='utf-8') as body_file:
-        command=["curl","-s","-o",body_file.name,"-w",curl_format,full_url];command.extend(["-X",endpoint_config.get("method","GET")])
+        command=["curl","-s","-o",body_file.name,"-w",curl_format,full_url,"--include"];command.extend(["-X",endpoint_config.get("method","GET")])
         for key,value in endpoint_config.get("headers",{}).items():command.extend(["-H",f"{key}: {value}"])
         if"body"in endpoint_config:command.extend(["-d",json.dumps(endpoint_config["body"])])
         try:
-            result=subprocess.run(command,capture_output=True,text=True,check=True);body_file.seek(0);snippet=body_file.read(50).replace('\n',' ');raw_data_s=json.loads(result.stdout)
+            result=subprocess.run(command,capture_output=True,text=True,check=True);body_file.seek(0);
+            body_content=body_file.read();
+            snippet=body_content.split('\r\n\r\n')[-1][:50].replace('\n',' ');
+            raw_data_s=json.loads(result.stdout);
+            
+            # Extract X-HTTP-Handler from response headers
+            handler_header = 'N/A'
+            response_headers_raw = raw_data_s.get('http_response_header', '')
+            for line in response_headers_raw.split('\n'):
+                if line.startswith('X-Http-Handler:'):
+                    handler_header = line.split(': ')[1].strip()
+                    break
+
             timing_data_ms={"dns_time_ms":round(float(raw_data_s['dns_time_s'])*1000,3),"tcp_time_ms":round(float(raw_data_s['tcp_time_s'])*1000,3),"ttfb_ms":round(float(raw_data_s['ttfb_s'])*1000,3),"total_time_ms":round(float(raw_data_s['total_time_s'])*1000,3)}
             if url_scheme=='https':
                 tls_time_ms=round(float(raw_data_s['tls_time_s'])*1000,3);timing_data_ms['tls_time_ms']=tls_time_ms;timing_data_ms['tls_handshake_ms']=round(tls_time_ms-timing_data_ms['tcp_time_ms'],3)
             else:
                 timing_data_ms['tls_time_ms']='N/A';timing_data_ms['tls_handshake_ms']='N/A'
-            return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":raw_data_s['status_code'],"body_snippet":snippet,**timing_data_ms}
+            return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":raw_data_s['status_code'],"body_snippet":snippet,"http_handler":handler_header,**timing_data_ms}
         except FileNotFoundError:print(f"{Colors.BOLD}ERROR: `curl` not found.{Colors.RESET}");exit(1)
         except(subprocess.CalledProcessError,json.JSONDecodeError)as e:return{"name":endpoint_config["name"],"timestamp":datetime.datetime.now().isoformat(),"status_code":"000","error":str(e),"body_snippet":""}
 def draw_dashboard(results,terminal_width,current_test_info=""):
@@ -407,11 +439,11 @@ def draw_dashboard(results,terminal_width,current_test_info=""):
             if end_pos>mid_pos+len(label_mid):scale_labels+=" "*(end_pos-(mid_pos+len(label_mid)))+label_end
         print(scale_labels);print(f"{Colors.DIM}  Recent Queries:{Colors.RESET}")
         for res in endpoint_results[-LOG_HISTORY_COUNT:]:
-            status=res.get('status_code','ERR');time_val=res.get('total_time_ms',0);status_color=Colors.GREEN if str(status).startswith('2')else Colors.YELLOW;print(f"  - {res.get('timestamp','')[11:23]} | Status: {status_color}{status}{Colors.RESET} | Total: {time_val:.3f}ms")
+            status=res.get('status_code','ERR');time_val=res.get('total_time_ms',0);status_color=Colors.GREEN if str(status).startswith('2')else Colors.YELLOW;print(f"  - {res.get('timestamp','')[11:23]} | Status: {status_color}{status}{Colors.RESET} | Total: {time_val:.3f}ms | Handler: {res.get('http_handler')}")
         print("")
 def main():
     parser=argparse.ArgumentParser(description="API Performance Measurement Tool.");parser.add_argument("--base-url",default=BASE_URL,help="Base URL of the API to test.");parser.add_argument("--runs",type=int,default=50,help="Number of requests to make *per endpoint*.");parser.add_argument("--delay",type=int,default=100,help="Delay between requests in milliseconds.");args=parser.parse_args();timestamp=datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S");csv_filename=f"performance_results_{timestamp}.csv"
-    csv_headers=["timestamp","name","status_code","body_snippet","dns_time_ms","tcp_time_ms","tls_time_ms","tls_handshake_ms","ttfb_ms","total_time_ms","error"]
+    csv_headers=["timestamp","name","status_code","body_snippet","http_handler","dns_time_ms","tcp_time_ms","tls_time_ms","tls_handshake_ms","ttfb_ms","total_time_ms","error"]
     with open(csv_filename,"w",newline="",encoding='utf-8')as f:
         writer=csv.DictWriter(f,fieldnames=csv_headers);writer.writeheader();all_results=[];terminal_width=100
         try:terminal_width,_=os.get_terminal_size()
@@ -428,7 +460,7 @@ if __name__=="__main__":
     main()
 EOF
 
-echo "Creating API setup script: setup_api.sh..."
+echo "Creating API setup script: setup_api.sh (Port 8000)..."
 cat > setup_api.sh << 'EOF'
 #!/bin/zsh
 echo "--- Setting up Python environment for the Test API ---"
@@ -436,12 +468,24 @@ if ! command -v python3 &> /dev/null; then echo "Error: python3 is not installed
 python3 -m venv api_env; source api_env/bin/activate
 echo "--- Installing Flask and Gunicorn ---"; pip install Flask gunicorn
 echo "\n--- Setup Complete ---"
-echo "To run the API server, activate the environment and use Gunicorn:"
-echo "source api_env/bin/activate"
-echo "gunicorn --bind 0.0.0.0:5000 --workers 4 api:app"
+echo "You can now run the API server in one of two modes:"
+echo
+echo "\033[1mMode 1 (Default - Production Style with Gunicorn):\033[0m"
+echo "Use this to test with Gunicorn's baseline security."
+echo "  source api_env/bin/activate"
+echo "  gunicorn --bind 0.0.0.0:8000 --workers 4 api:app" # <-- MODIFIED TO PORT 8000
+echo
+echo "\033[1mMode 1 (Verbose - Production Style with Gunicorn):\033[0m"
+echo "  source api_env/bin/activate"
+echo "  gunicorn --bind 0.0.0.0:8000 --workers 4 api:app -- --verbose" # <-- MODIFIED TO PORT 8000
+echo
+echo "\033[1mMode 2 (Permissive - Development Style):\033[0m"
+echo "Use this for pure WAF testing without Gunicorn's interference."
+echo "  source api_env/bin/activate"
+echo "  python3 api.py --verbose"
 EOF
 
-echo "Creating Testers setup script: setup_testers.sh..."
+echo "Creating Testers setup script: setup_testers.sh (Port 8000)..."
 cat > setup_testers.sh << 'EOF'
 #!/bin/zsh
 echo "--- Setting up Python environment for the API Testers ---"
@@ -449,12 +493,12 @@ if ! command -v python3 &> /dev/null; then echo "Error: python3 is not installed
 python3 -m venv tester_env; source tester_env/bin/activate
 echo "--- Installing Requests library ---"; pip install requests
 echo "\n--- Setup Complete ---"
-echo "To run the functional tester:"; echo "source tester_env/bin/activate"; echo "python3 tester.py"
-echo "\nTo run the WAF fuzzer:"; echo "source tester_env/bin/activate"; echo "python3 fuzzer.py"
-echo "\nTo run the performance tester:"; echo "source tester_env/bin/activate"; echo "python3 perf_tester.py"
+echo "To run the functional tester:"; echo "  source tester_env/bin/activate"; echo "  python3 tester.py"
+echo "\nTo run the WAF fuzzer:"; echo "  source tester_env/bin/activate"; echo "  python3 fuzzer.py"
+echo "\nTo run the performance tester:"; echo "  source tester_env/bin/activate"; echo "  python3 perf_tester.py"
 EOF
 
 chmod +x setup_api.sh
 chmod +x setup_testers.sh
 
-echo "\nAll script files have been regenerated in their complete and final form!"
+echo "\nAll script files have been regenerated and are now set to use PORT 8000!"

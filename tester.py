@@ -1,7 +1,7 @@
 import requests, time, json
 from urllib.parse import quote
 
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = "http://127.0.0.1:8000" # <-- MODIFIED TO PORT 8000
 HEADERS = {'User-Agent': 'WAF-Tester-Client/1.0', 'Content-Type': 'application/json'}
 
 def print_test(name, success, details=""):
@@ -26,6 +26,16 @@ def test_delay():
         print_test("Response delay is accurate", success, f"Expected ~{delay_ms}ms, Got {duration_s*1000:.2f}ms")
     except requests.exceptions.RequestException as e:
         print_test("Response delay is accurate", False, f"Request failed: {e}")
+
+def test_headers():
+    print("\n--- Testing /headers Endpoint ---")
+    try:
+        response = requests.get(f"{BASE_URL}/headers", headers=HEADERS)
+        data = response.json()
+        success = response.status_code == 200 and data.get("User-Agent") == HEADERS['User-Agent']
+        print_test("Reflects custom User-Agent header", success, f"Sent: {HEADERS['User-Agent']}")
+    except requests.exceptions.RequestException as e:
+        print_test("Reflects custom User-Agent header", False, f"Request failed: {e}")
 
 def test_response_codes():
     print("\n--- Testing /response-code Endpoint ---")
@@ -89,6 +99,7 @@ def main():
     
     test_usage_endpoint()
     test_delay()
+    test_headers()
     test_response_codes()
     test_contract_security()
     test_pattern_blocking()

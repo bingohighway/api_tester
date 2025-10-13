@@ -1,22 +1,11 @@
 #!/usr/bin/env python3
-import requests
-import time
-import json
-import datetime
-import csv
-import argparse
+import requests, time, json, datetime, csv, argparse
 
-# --- Configuration ---
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = "http://127.0.0.1:8000"
 HEADERS = {'User-Agent': 'WAF-Fuzzer/1.0', 'Content-Type': 'application/json'}
-
 class Colors:
     GREEN = '\033[92m'; RESET = '\033[0m'; BOLD = '\033[1m'; RED = '\033[91m'; DIM = '\033[2m'
-
-# --- Comprehensive Diagnostic Payloads (OWASP Inspired) ---
-# Payloads are now flagged if Gunicorn is likely to block them by default.
 PAYLOADS = [
-    # --- SQL Injection (SQLi) ---
     {"type": "SQLi", "description": "Classic Tautology", "payload": "' OR 1=1--"},
     {"type": "SQLi", "description": "Tautology with Comment", "payload": "' OR 'a'='a"},
     {"type": "SQLi", "description": "Boolean-based Blind", "payload": "AND 1=1"},
@@ -27,8 +16,6 @@ PAYLOADS = [
     {"type": "SQLi", "description": "Authentication Bypass", "payload": "admin'--"},
     {"type": "SQLi", "description": "Double Quote Tautology", "payload": "\" OR 1=1--"},
     {"type": "SQLi", "description": "Wildcard Bypass", "payload": "' OR '%'='"},
-
-    # --- Cross-Site Scripting (XSS) ---
     {"type": "XSS", "description": "Basic Script Tag", "payload": "<script>alert('XSS')</script>"},
     {"type": "XSS", "description": "Image OnError", "payload": "<img src=x onerror=alert(document.cookie)>"},
     {"type": "XSS", "description": "Body OnLoad", "payload": "<body onload=alert(1)>"},
@@ -39,8 +26,6 @@ PAYLOADS = [
     {"type": "XSS", "description": "Anchor Href", "payload": "<a href=\"javascript:alert(1)\">Click me</a>"},
     {"type": "XSS", "description": "Input Autofocus", "payload": "<input onfocus=alert(1) autofocus>"},
     {"type": "XSS", "description": "Video Poster", "payload": "<video poster=javascript:alert(1)>"},
-
-    # --- Command Injection ---
     {"type": "Cmd Injection", "description": "Simple Pipe", "payload": "| whoami"},
     {"type": "Cmd Injection", "description": "Semicolon Separator", "payload": "; ls -la /"},
     {"type": "Cmd Injection", "description": "Logical AND", "payload": "&& cat /etc/passwd"},
@@ -48,27 +33,19 @@ PAYLOADS = [
     {"type": "Cmd Injection", "description": "Backticks", "payload": "`uname -a`"},
     {"type": "Cmd Injection", "description": "Command Substitution", "payload": "$(reboot)"},
     {"type": "Cmd Injection", "description": "Newline Separator", "payload": "id\ncat /etc/hosts", "gunicorn_block": True},
-
-    # --- Path Traversal ---
     {"type": "Path Traversal", "description": "Parent Directory", "payload": "../../etc/passwd"},
     {"type": "Path Traversal", "description": "Root Directory", "payload": "/etc/shadow"},
     {"type": "Path Traversal", "description": "Windows Directory", "payload": "..\\..\\..\\windows\\win.ini"},
     {"type": "Path Traversal", "description": "URL Encoded", "payload": "%2e%2e%2f%2e%2e%2fetc%2fpasswd"},
     {"type": "Path Traversal", "description": "Double URL Encoded", "payload": "%252e%252e%252fetc%252fpasswd"},
     {"type": "Path Traversal", "description": "Null Byte", "payload": "../../etc/passwd%00"},
-
-    # --- Server-Side Request Forgery (SSRF) ---
     {"type": "SSRF", "description": "Localhost", "payload": "http://localhost/admin"},
     {"type": "SSRF", "description": "127.0.0.1", "payload": "http://127.0.0.1:8080"},
     {"type": "SSRF", "description": "AWS Metadata Service", "payload": "http://169.254.169.254/latest/meta-data/"},
     {"type": "SSRF", "description": "GCP Metadata Service", "payload": "http://metadata.google.internal/computeMetadata/v1/"},
     {"type": "SSRF", "description": "Internal IP", "payload": "http://10.0.0.1/"},
-
-    # --- Log & Header Injection ---
     {"type": "Log Injection", "description": "Newline Characters", "payload": "user=guest%0a%0dmalicious_log_entry", "gunicorn_block": True},
     {"type": "HTTP Header Inj", "description": "Response Splitting", "payload": "value%0d%0aContent-Length:%200%0d%0a%0d%0aHTTP/1.1%20200%20OK", "gunicorn_block": True},
-    
-    # --- Insecure Deserialization (Basic Patterns) ---
     {"type": "Deserialization", "description": "Java RMI Header", "payload": "JRMI", "gunicorn_block": True},
     {"type": "Deserialization", "description": "Python Pickle", "payload": "cposix\nsystem\n", "gunicorn_block": True},
     {"type": "Deserialization", "description": ".NET Gadget", "payload": "AAEAAAD/////AQAAAAAAAAAMAgAAAFBTeXN0ZW0", "gunicorn_block": True},
@@ -77,52 +54,57 @@ PAYLOADS = [
 def print_result(attack_info, contract_type, result, details=""):
     result_color = Colors.GREEN if result == "BLOCKED" else Colors.RED
     note = ""
-    # <-- MODIFIED: Add a note if this block was expected
-    if result == "BLOCKED" and attack_info.get("gunicorn_block"):
-        note = f" {Colors.DIM}(Expected Gunicorn block){Colors.RESET}"
-    
+    if result == "BLOCKED" and attack_info.get("gunicorn_block"): note = f" {Colors.DIM}(Expected Gunicorn block){Colors.RESET}"
     print(f"  [{attack_info['type']:18s}] [{contract_type:14s}] Result: {result_color}{result}{Colors.RESET} | {details}{note}")
 
 def run_test(endpoint, contract_type, attack_info, writer, verbose=False):
-    payload = attack_info['payload']
-    full_url = f"{BASE_URL}{endpoint}"
-    json_body = {"data": payload}
+    payload = attack_info['payload']; full_url = f"{BASE_URL}{endpoint}"; json_body = {"data": payload}
     
-    if verbose:
-        print(f"{Colors.DIM}  ------------------------------------------------------\n  VERBOSE: Sending Request...\n  - URL:     {full_url}\n  - Method:  POST\n  - Headers: {json.dumps(HEADERS)}\n  - Body:    {json.dumps(json_body)}\n  ------------------------------------------------------{Colors.RESET}")
-
-    fail_condition_status = "pattern_received"
+    # --- VERBOSE REQUEST LOG ---
+    if verbose: 
+        print(f"{Colors.DIM}  ------------------------------------------------------")
+        print(f"  VERBOSE: Sending Request...")
+        print(f"  - URL:     {full_url}")
+        print(f"  - Method:  POST")
+        print(f"  - Headers: {json.dumps(HEADERS)}")
+        print(f"  - Body:    {json.dumps(json_body)}")
+        print(f"  ------------------------------------------------------{Colors.RESET}")
     
-    result_data = {
-        "timestamp": datetime.datetime.utcnow().isoformat(),
-        "attack_type": attack_info['type'], "description": attack_info['description'],
-        "payload": payload, "contract_type": contract_type,
-        "expected_gunicorn_block": attack_info.get("gunicorn_block", False), # <-- MODIFIED: Add to CSV data
-        "result": "", "http_status": "N/A", "response_body": ""
-    }
+    result_data = { "timestamp": datetime.datetime.utcnow().isoformat(), "attack_type": attack_info['type'], "description": attack_info['description'], "payload": payload, "contract_type": contract_type, "expected_gunicorn_block": attack_info.get("gunicorn_block", False), "http_handler": "N/A", "result": "", "http_status": "N/A", "response_body": "" }
+    
+    full_response_text = ""
 
     try:
         res = requests.post(full_url, json=json_body, headers=HEADERS, timeout=2)
         result_data["http_status"] = res.status_code
+        result_data["http_handler"] = res.headers.get('X-HTTP-Handler', 'N/A')
         
         response_json = {}
         try:
             response_json = res.json()
             result_data["response_body"] = json.dumps(response_json)
+            full_response_text = json.dumps(response_json, indent=2)
         except json.JSONDecodeError:
             result_data["response_body"] = res.text[:200]
+            full_response_text = res.text
 
-        if response_json.get("status") == fail_condition_status:
-            result_data["result"] = "ALLOWED"
-            print_result(attack_info, contract_type, "ALLOWED", f"WAF FAILED - API received pattern: {response_json.get('pattern_name', 'N/A')}")
+        if response_json.get("status") == "pattern_received":
+            result_data["result"] = "ALLOWED"; print_result(attack_info, contract_type, "ALLOWED", f"WAF FAILED - API received: {response_json.get('pattern_name', 'N/A')}")
         else:
-            result_data["result"] = "BLOCKED"
-            print_result(attack_info, contract_type, "BLOCKED", f"WAF Block Page or API rejection (Status: {res.status_code})")
-
+            result_data["result"] = "BLOCKED"; print_result(attack_info, contract_type, "BLOCKED", f"WAF Block Page or API rejection (Status: {res.status_code})")
+    
     except requests.exceptions.RequestException as e:
-        result_data["result"] = "BLOCKED"
-        result_data["response_body"] = str(e)
+        result_data["result"] = "BLOCKED"; result_data["response_body"] = str(e)
         print_result(attack_info, contract_type, "BLOCKED", "Request failed (No HTTP Response)")
+        full_response_text = f"Request Exception: {str(e)}"
+    
+    # --- VERBOSE RESPONSE LOG ---
+    if verbose:
+        print(f"{Colors.DIM}  ------------------------------------------------------")
+        print(f"  VERBOSE: Received Response (Status: {result_data['http_status']})")
+        print(f"  - Handler: {result_data['http_handler']}")
+        print(f"  - Body:\n{full_response_text}")
+        print(f"  ------------------------------------------------------{Colors.RESET}")
     
     writer.writerow(result_data)
 
@@ -130,30 +112,17 @@ def main():
     parser = argparse.ArgumentParser(description="A comprehensive fuzzer to test WAF efficacy.")
     parser.add_argument("--delay", type=int, default=100, help="Delay in milliseconds between each payload test.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode to print full request details.")
-    args = parser.parse_args()
-
-    print(f"{Colors.BOLD}--- Starting WAF Efficacy Fuzzer against {BASE_URL} ---\n")
-    
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    csv_filename = f"fuzz_results_{timestamp}.csv"
-    # <-- MODIFIED: Add new column to CSV headers
-    csv_headers = ["timestamp", "attack_type", "description", "payload", "contract_type", "expected_gunicorn_block", "result", "http_status", "response_body"]
-
+    args = parser.parse_args(); print(f"{Colors.BOLD}--- Starting WAF Efficacy Fuzzer against {BASE_URL} ---\n")
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"); csv_filename = f"fuzz_results_{timestamp}.csv"
+    csv_headers = ["timestamp", "attack_type", "description", "payload", "contract_type", "expected_gunicorn_block", "result", "http_status", "http_handler", "response_body"]
     with open(csv_filename, "w", newline="", encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=csv_headers)
-        writer.writeheader()
-
+        writer = csv.DictWriter(f, fieldnames=csv_headers); writer.writeheader()
         total_payloads = len(PAYLOADS)
         for i, attack in enumerate(PAYLOADS):
             print(f"Testing Payload {i+1}/{total_payloads}: {Colors.BOLD}{attack['payload']}{Colors.RESET} ({attack['description']})")
-            
             run_test("/fuzz-target-weak", "Weak Contract", attack, writer, args.verbose)
             run_test("/fuzz-target-strict", "Strict Contract", attack, writer, args.verbose)
-            
-            print("-" * 80)
-            time.sleep(args.delay / 1000.0)
-
+            print("-" * 80); time.sleep(args.delay / 1000.0)
     print(f"\n{Colors.GREEN}Fuzzing complete. Full results saved to {Colors.BOLD}{csv_filename}{Colors.RESET}")
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
