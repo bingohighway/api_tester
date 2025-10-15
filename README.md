@@ -1,4 +1,4 @@
-\# WAF \& API Gateway Testing Suite
+# WAF & API Gateway Testing Suite
 
 This project provides a comprehensive suite of tools designed to test the functionality, security contract enforcement, and performance of Web Application Firewalls (WAFs) and API Gateways.
 
