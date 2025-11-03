@@ -16,4 +16,5 @@ EXPOSE 8000
 
 # Command to run the application using Gunicorn (Production Mode)
 # Binds Gunicorn to 0.0.0.0:8000 inside the container
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "api:app"]
+#CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "api:app"]
+CMD ["python3", "api.py", "-v"]
